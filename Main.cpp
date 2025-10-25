@@ -1,999 +1,1240 @@
 ﻿# include <Siv3D.hpp> // Siv3D v0.6.16
 
-void Main()
-{
-	// 基本設定
-	Scene::SetBackground(ColorF{ 0.98 });
-	Window::Resize(1920, 1080);
-	constexpr Size CellSize{ 40, 40 };
-	const Size gridCount{ (Scene::Width() / CellSize.x), (Scene::Height() / CellSize.y) };
-	const Rect gridArea{ 0, 0, (gridCount.x * CellSize.x), (gridCount.y * CellSize.y) };
+// ===================== ユーティリティ（Clamp 使わない） =====================
+template <class T>
+inline T limit(const T& x, const T& lo, const T& hi) {
+	return (x < lo ? lo : (x > hi ? hi : x));
+}
+inline double saturate(double x) { return limit(x, 0.0, 1.0); }
 
-	// フォント登録（UIで使う前に登録）
-	FontAsset::Register(U"UI", FontMethod::MSDF, 20, Typeface::Bold);
+// 簡易イージング（バナー表示など）
+inline double easeOutBack(double t) { t = saturate(t); const double c1 = 1.70158, c3 = c1 + 1.0; return 1 + c3 * Pow(t - 1, 3) + c1 * Pow(t - 1, 2); }
+inline double easeInOutSine(double t) { t = saturate(t); return -0.5 * (Cos(Math::Pi * t) - 1.0); }
 
-	// チーム
-	enum class Team : int32 { None = 0, Blue = 1, Red = 2 };
+// ===================== 基本 =====================
+enum class Team : int32 { None = 0, Blue = 1, Red = 2 };
+inline ColorF TeamColor(Team t) {
+	if (t == Team::Blue) return ColorF{ 0.20, 0.55, 1.0 };
+	if (t == Team::Red)  return ColorF{ 1.00, 0.35, 0.35 };
+	return ColorF{ 0.85 };
+}
+enum class Phase : int32 { Planning, Simulating, Summary };
+enum class TileKind : int32 { Floor = 0, Wall = 1, HQBlue = 2, HQRed = 3 };
 
-	auto TeamColor = [](Team t)->ColorF
-		{
-			switch (t)
-			{
-			case Team::Blue: return ColorF{ 0.20, 0.55, 1.0 };
-			case Team::Red:  return ColorF{ 1.00, 0.35, 0.35 };
-			default:         return ColorF{ 0.90 };
-			}
-		};
+enum class StructureType : int32 {
+	Basic = 0,        // 基本タレット：射程・弾数ふつう、ブレる
+	Sprinkler = 1,    // スプリンクラー：短射程・多弾（小弾が飛ぶ）
+	Pump = 2,         // インクポンプ：収益 +α
+	Sniper = 3,       // スナイパー：極長射程・貫通不可、敵タレット狙撃
+	Mortar = 4,       // 迫撃砲：高射程・壁越え爆撃（放物線・範囲）
+	HQ = 5            // 本拠地（内部用）
+};
 
-	// グリッドの所有状態
-	Grid<Team> owner(gridCount, Team::None);
+// ===================== マップ設定 =====================
+static constexpr int GW = 36;
+static constexpr int GH = 20;
 
-	// 便利関数
-	auto InBounds = [&](const Point& c)->bool
-		{
-			return (0 <= c.x && c.x < gridCount.x && 0 <= c.y && c.y < gridCount.y);
-		};
-	auto CellRect = [&](const Point& c)->Rect
-		{
-			return Rect{ (c.x * CellSize.x), (c.y * CellSize.y), CellSize };
-		};
-	auto CellCenter = [&](const Point& c)->Vec2
-		{
-			return Vec2{ (c.x + 0.5) * CellSize.x, (c.y + 0.5) * CellSize.y };
-		};
-	auto PosToCell = [&](const Vec2& p)->Point
-		{
-			return Point{
-				Clamp<int32>(static_cast<int32>(p.x) / CellSize.x, 0, (gridCount.x - 1)),
-				Clamp<int32>(static_cast<int32>(p.y) / CellSize.y, 0, (gridCount.y - 1))
-			};
-		};
+// 画面レイアウト
+static constexpr double UIWidth = 360.0;
+static constexpr double Margin = 12.0;
 
-	// 初期のタワー配置（左中段が Blue、右中段が Red）
-	const Point blueTowerCell{ Max(2, gridCount.x / 4), gridCount.y / 2 };
-	const Point redTowerCell{ Min(gridCount.x - 3, (gridCount.x * 3) / 4), gridCount.y / 2 };
+// ターン/シミュレーション
+static constexpr double SimDuration = 10.0;
 
-	// 建物
-	enum class BType : int32 { Tower, Turret, Facility, Wall, Fortress };
+// 経済
+static constexpr int CostBasic = 40;
+static constexpr int CostSprinkler = 35;
+static constexpr int CostPump = 60;
+static constexpr int CostSniper = 90;
+static constexpr int CostMortar = 80;
+static constexpr int IncomePerTile = 1;
+static constexpr int IncomePerPump = 20;
 
-	struct Building
-	{
-		BType type{};
-		Team team{};
-		Point cell{};
-		// タレット
-		double cooldown = 0.0;
-		// タワー浸食
-		double capture = 0.0; // 進行度
-		// 要塞耐久
-		int   hp = 0;
-		int   maxHP = 0;
-		bool  alive = true; // 破壊後は false
+// 構造物 HP
+static constexpr double HPBasic = 120.0;
+static constexpr double HPSprinkler = 90.0;
+static constexpr double HPPump = 120.0;
+static constexpr double HPSniper = 80.0;
+static constexpr double HPMortar = 100.0;
+static constexpr double HPHQ = 600.0;
+
+// タレット仕様（射程：タイル、発射回数、弾仕様）
+struct TypeSpec {
+	int   cost = 0;
+	double maxHP = 0;
+	int   range = 0;           // タイル距離
+	int   shots = 0;           // 自動フェーズ10秒での発射回数
+	double damage = 0;         // 構造物へのダメージ
+	double paint = 0;          // タイル塗り変化量（Blue:+ / Red:-）
+	int   aoeRadius = 0;       // AoE半径（タイル） 0=単体
+	bool  blockedByWalls = true; // 壁で遮蔽されるか
+	bool  targetTurretOnly = false; // タレット（またはHQ）狙い
+	bool  indirect = false;    // 壁を無視（迫撃砲）
+	double spread = 0;         // 着弾ブレ（タイル）
+	double projSpeed = 800.0;  // 弾速度（px/s）
+	double projRadius = 5.0;   // 見た目用の弾半径（px）
+};
+
+inline const TypeSpec& GetSpec(StructureType t) {
+	static TypeSpec sBasic{
+		CostBasic, HPBasic,
+		6, 10, 18.0, 0.18, 0, true, false, false, 1.5, 780.0, 5.0
+	};
+	static TypeSpec sSprinkler{
+		CostSprinkler, HPSprinkler,
+		3, 22, 0.0, 0.12, 0, false, false, false, 0.0, 520.0, 4.0
+	};
+	static TypeSpec sPump{
+		CostPump, HPPump,
+		0, 0, 0.0, 0.0, 0, false, false, false, 0.0, 0.0, 0.0
+	};
+	static TypeSpec sSniper{
+		CostSniper, HPSniper,
+		12, 2, 120.0, 0.02, 0, true, true, false, 0.0, 1400.0, 4.0
+	};
+	static TypeSpec sMortar{
+		CostMortar, HPMortar,
+		10, 3, 35.0, 0.10, 2, false, false, true, 2.0, 540.0, 6.0
+	};
+	static TypeSpec sHQ{
+		0, HPHQ, 0, 0, 0, 0, 0, false, false, false, 0.0, 0.0, 0.0
 	};
 
-	// ゲーム状態
-	enum class GameState { Playing, BlueWin, BlueLose };
-	GameState gameState = GameState::Playing;
-
-	// 要塞の耐久と弾ダメージ
-	constexpr int fortressMaxHP = 200;
-	constexpr int fortressHitDamage = 20;
-
-	Array<Building> buildings;
-	Grid<int32> buildingAt(gridCount, -1); // -1: なし、>=0: buildings の index
-
-	auto CountAliveFortress = [&](Team team)->int
-		{
-			int n = 0;
-			for (const auto& b : buildings)
-			{
-				if (b.alive && b.type == BType::Fortress && b.team == team) ++n;
-			}
-			return n;
-		};
-
-	auto PlaceBuilding = [&](BType type, Team team, const Point& cell)->bool
-		{
-			if (!InBounds(cell)) return false;
-			if (buildingAt[cell] != -1) return false;
-			// 壁以外は自色タイルの上のみ配置可（壁も今回は自色のみ可に統一）
-			if (owner[cell] != team) return false;
-			// 要塞は各陣営 1 基まで
-			if (type == BType::Fortress && CountAliveFortress(team) >= 1) return false;
-
-			Building b;
-			b.type = type;
-			b.team = team;
-			b.cell = cell;
-			b.cooldown = 0.0;
-			b.capture = 0.0;
-			b.alive = true;
-			if (type == BType::Fortress)
-			{
-				b.maxHP = fortressMaxHP;
-				b.hp = fortressMaxHP;
-			}
-
-			const int32 idx = static_cast<int32>(buildings.size());
-			buildings << Building{ .type = type, .team = team, .cell = cell, .cooldown = 0.0, .capture = 0.0 };
-			buildingAt[cell] = idx;
-			return true;
-		};
-
-	// 初期自陣（左右半分塗り）
-	// タワー設置
-	PlaceBuilding(BType::Tower, Team::Blue, blueTowerCell);
-	PlaceBuilding(BType::Tower, Team::Red, redTowerCell);
-
-	// タワー中心も自色で塗る
-	owner[blueTowerCell] = Team::Blue;
-	owner[redTowerCell] = Team::Red;
-
-	// 画面を左右で半分ずつ塗る（左=Blue / 右=Red）
-	for (int y = 0; y < gridCount.y; ++y)
-	{
-		for (int x = 0; x < gridCount.x; ++x)
-		{
-			owner[y][x] = (x < (gridCount.x / 2)) ? Team::Blue : Team::Red;
-		}
+	switch (t) {
+	case StructureType::Basic:      return sBasic;
+	case StructureType::Sprinkler:  return sSprinkler;
+	case StructureType::Pump:       return sPump;
+	case StructureType::Sniper:     return sSniper;
+	case StructureType::Mortar:     return sMortar;
+	case StructureType::HQ:         return sHQ;
+	default:                        return sBasic;
 	}
+}
+
+// ===================== データ構造 =====================
+struct Tile {
+	TileKind kind = TileKind::Floor;
+	float paint = 0.5f; // 0..1（0=Red、1=Blue）
+};
+
+struct Structure {
+	Team owner = Team::Blue;
+	StructureType type = StructureType::Basic;
+	Point cell{ 0, 0 };
+	double hp = 1.0;
+	bool alive = true;
+	double nextFire = 0.0;
+	double interval = 1.0;
+};
+
+struct Tracer {
+	Vec2 p0, p1;
+	ColorF col;
+	double age = 0.0, life = 0.18;
+};
+
+struct Particle {
+	Vec2 pos, vel;
+	ColorF col;
+	double age = 0.0, life = 0.5;
+	double size0 = 3.0, size1 = 12.0;
+};
+
+// 実弾（見える弾）
+enum class ProjKind : int32 { Bullet, Droplet, Sniper, Mortar };
+struct Projectile {
+	ProjKind kind = ProjKind::Bullet;
+	Team owner = Team::Blue;
+	Vec2 pos;
+	Vec2 vel;            // 直進用
+	double radius = 5.0; // 見た目
+	// 目的
+	Point targetCell{ -1, -1 };
+	// 当たり判定/効果
+	bool blockedByWalls = true;
+	bool indirect = false;
+	int aoeRadius = 0;     // 0=単体
+	double damage = 0.0;
+	double paint = 0.0;
+	// 寿命・管理
+	double age = 0.0, life = 3.0;
+	// 放物線用
+	bool useArc = false;
+	Vec2 startPos, endPos, apexPos;
+	double u = 0.0;        // 経路の進捗0..1
+	double pathLen = 1.0;  // 経路長（px）
+	double pathSpeed = 600.0; // 経路に沿って進む速度（px/s）
+};
+
+// ===================== マップと描画座標 =====================
+struct Board {
+	Array<Tile> tiles;      // GW*GH
+	Array<int> blueIndex;   // 各セルの味方構造物インデックス（-1=なし）
+	Array<int> redIndex;    // 各セルの敵構造物インデックス（-1=なし）
+	RectF gridRect;
+	double tileSize = 32.0;
+
+	void init() {
+		tiles.assign(GW * GH, Tile{});
+		blueIndex.assign(GW * GH, -1);
+		redIndex.assign(GW * GH, -1);
+	}
+
+	inline int idx(int x, int y) const noexcept { return (y * GW + x); }
+	bool inBounds(int x, int y) const noexcept {
+		return (0 <= x && x < GW && 0 <= y && y < GH);
+	}
+
+	Optional<Point> screenToCell(const Vec2& sp) const {
+		if (!gridRect.intersects(sp)) return none;
+		const Vec2 q = sp - gridRect.pos;
+		const int cx = static_cast<int>(q.x / tileSize);
+		const int cy = static_cast<int>(q.y / tileSize);
+		if (!inBounds(cx, cy)) return none;
+		return Point{ cx, cy };
+	}
+
+	// 画面座標->セル（盤面外は none）
+	Optional<Point> posToCell(const Vec2& p) const {
+		return screenToCell(p);
+	}
+
+	Vec2 cellCenter(const Point& c) const {
+		return gridRect.pos + Vec2{ (c.x + 0.5) * tileSize, (c.y + 0.5) * tileSize };
+	}
+	RectF cellRect(const Point& c) const {
+		return RectF{ gridRect.pos + Vec2{ c.x * tileSize, c.y * tileSize }, tileSize, tileSize };
+	}
+};
+
+// ===================== ユーティリティ（マップロジック） =====================
+static Array<Point> LineCells(const Point& a, const Point& b) {
+	Array<Point> out;
+	int x0 = a.x, y0 = a.y, x1 = b.x, y1 = b.y;
+	const int dx = std::abs(x1 - x0), sx = (x0 < x1 ? 1 : -1);
+	const int dy = -std::abs(y1 - y0), sy = (y0 < y1 ? 1 : -1);
+	int err = dx + dy;
+	while (true) {
+		out << Point{ x0, y0 };
+		if (x0 == x1 && y0 == y1) break;
+		int e2 = 2 * err;
+		if (e2 >= dy) { err += dy; x0 += sx; }
+		if (e2 <= dx) { err += dx; y0 += sy; }
+	}
+	return out;
+}
+
+static Point RaycastUntilWall(const Board& brd, const Point& a, const Point& b) {
+	const auto path = LineCells(a, b);
+	Point last = a;
+	for (int i = 0; i < (int)path.size(); ++i) {
+		const Point c = path[i];
+		if (!brd.inBounds(c.x, c.y)) return last;
+		const TileKind k = brd.tiles[brd.idx(c.x, c.y)].kind;
+		if (k == TileKind::Wall) return last;
+		last = c;
+	}
+	return last;
+}
+
+static double TileDist(const Point& a, const Point& b) {
+	const double dx = (double)(a.x - b.x);
+	const double dy = (double)(a.y - b.y);
+	return Math::Sqrt(dx * dx + dy * dy);
+}
+
+static std::pair<double, double> Ownership(const Board& brd) {
+	int blue = 0, red = 0;
+	const int total = GW * GH;
+	for (const auto& t : brd.tiles) {
+		if (t.paint > 0.60f) ++blue;
+		else if (t.paint < 0.40f) ++red;
+	}
+	return { (double)blue / total, (double)red / total };
+}
+
+// ===================== 構造体管理 =====================
+struct Game {
+	Board brd;
+	Phase phase = Phase::Planning;
+
+	// ステージ
+	int stage = 1;
+	bool stageStarting = true;
+	double stageBannerT = 0.0; // 0->1でアニメ
+	bool stageCleared = false;
 
 	// 経済
-	double moneyBlue = 100.0;
-	double moneyRed = 100.0;
-	const double tileIncomePerSec = 0.20;   // 自色タイル収益
-	const double facilityIncomePerSec = 3.0; // 施設収益
-	double incomeTimer = 0.0;
+	int moneyBlue = 140;
+	int moneyRed = 140;
+	int turnCount = 1;
 
-	// コスト
-	const int turretCost = 30;
-	const int facilityCost = 50;
-	const int wallCost = 10;
-	const int fortressCost = 80; // 要塞
+	// プレイヤーの選択
+	StructureType selectedType = StructureType::Basic;
 
-	// タレット仕様
-	const double turretRange = 220.0;
-	const double fireCooldown = 0.6;
+	// 構造物
+	Array<Structure> blues;
+	Array<Structure> reds;
 
-	// 浸食仕様
-	const double captureTime = 3.0; // これを超えるとタワーが乗っ取られる
-	const int captureNeed = 6;      // 8近傍のうち必要な敵色数
+	// HQインデックス
+	int blueHQ = -1;
+	int redHQ = -1;
 
-	// 弾
-	struct Bullet
-	{
-		Vec2 pos;
-		Vec2 vel;
-		Point targetCell;
-		Team team;
-		ColorF color;
-	};
-	Array<Bullet> bullets;
-	constexpr double bulletSpeed = 600.0;
-	constexpr double bulletRadius = 6.0;
+	// シミュレーション
+	double simTime = 0.0;
+	double simElapsed = 0.0;
 
-	// 選択中の建設種別
-	BType selected = BType::Turret;
+	// 視覚演出
+	Array<Tracer> tracers;
+	Array<Particle> particles;
+	Array<Projectile> projectiles;
 
-	// AI
-	double aiBuildTimer = 0.0;
+	// 画面振動・ヒットストップ
+	double shakeT = 0.0, shakeDur = 0.0, shakePow = 0.0;
+	double timeScale = 1.0, hitStopTimer = 0.0;
 
-	// 対象選定：タレットが狙うセル
-	auto ChooseTargetForTurret = [&](Team team, const Point& fromCell)->Optional<Point>
-		{
-			Array<Point> enemy, neutral;
-			// 探索半径（セル数）
-			const int maxR = static_cast<int>(Ceil(turretRange / static_cast<double>(CellSize.x))) + 1;
+	// レイアウト
+	void layout() {
+		const double leftW = Scene::Width() - UIWidth - 2 * Margin;
+		const double leftH = Scene::Height() - 2 * Margin;
+		const double ts1 = leftW / GW;
+		const double ts2 = leftH / GH;
+		brd.tileSize = Min(ts1, ts2);
+		const double gridW = brd.tileSize * GW;
+		const double gridH = brd.tileSize * GH;
+		brd.gridRect = RectF{ Margin, Margin, gridW, gridH };
+	}
 
-			for (int dy = -maxR; dy <= maxR; ++dy)
-			{
-				for (int dx = -maxR; dx <= maxR; ++dx)
-				{
-					const Point p = fromCell + Point{ dx, dy };
-					if (!InBounds(p)) continue;
+	// マップ生成（ステージごとに難易度を少し上げる）
+	void buildMapForStage(int stageNo) {
+		brd.init();
 
-					// 射程円判定
-					if (CellCenter(fromCell).distanceFrom(CellCenter(p)) > turretRange) continue;
-
-					if (buildingAt[p] != -1 && buildings[buildingAt[p]].type == BType::Wall)
-					{
-						// 壁セルは狙っても無効なのでスキップ
-						continue;
-					}
-
-					if (owner[p] == Team::None)
-					{
-						neutral << p;
-					}
-					else if (owner[p] != team)
-					{
-						enemy << p;
-					}
+		for (int y = 0; y < GH; ++y) {
+			for (int x = 0; x < GW; ++x) {
+				Tile& t = brd.tiles[brd.idx(x, y)];
+				bool makeWall = false;
+				if ((x % 11 == 0) && (y % 5 != 0) && (x > 6 && x < GW - 6)) makeWall = true;
+				if (stageNo >= 2 && (x % 13 == 6) && (y % 7 == 3)) makeWall = true;
+				if (makeWall) {
+					t.kind = TileKind::Wall;
+					t.paint = 0.5f;
+					continue;
 				}
+				if (x < GW / 2 - 2)      t.paint = 0.80f;
+				else if (x > GW / 2 + 1) t.paint = 0.20f;
+				else                     t.paint = 0.50f;
+				t.kind = TileKind::Floor;
 			}
-
-			if (!enemy.isEmpty()) return enemy.choice();
-			if (!neutral.isEmpty()) return neutral.choice();
-			return none;
-		};
-
-	// 経済計算（毎秒）
-	auto DoIncomeTick = [&]()
-		{
-			int blueTiles = 0, redTiles = 0;
-			int blueFacilities = 0, redFacilities = 0;
-
-			for (int y = 0; y < gridCount.y; ++y)
-			{
-				for (int x = 0; x < gridCount.x; ++x)
-				{
-					const Team t = owner[y][x];
-					if (t == Team::Blue) ++blueTiles;
-					else if (t == Team::Red) ++redTiles;
-				}
-			}
-			for (const auto& b : buildings)
-			{
-				if (!b.alive) continue;
-				if (b.type == BType::Facility)
-				{
-					if (b.team == Team::Blue) ++blueFacilities;
-					else if (b.team == Team::Red) ++redFacilities;
-				}
-			}
-
-			moneyBlue += blueTiles * tileIncomePerSec + blueFacilities * facilityIncomePerSec;
-			moneyRed += redTiles * tileIncomePerSec + redFacilities * facilityIncomePerSec;
-		};
-
-	// 入力ヘルパ
-	auto IsCellPlaceable = [&](Team team, const Point& cell, BType type)->bool
-		{
-			if (!InBounds(cell)) return false;
-			if (buildingAt[cell] != -1) return false;
-			if (owner[cell] != team) return false;
-			// 追加制約があればここへ
-			return true;
-		};
-
-	//========================
-	// ここから箱 / トークン機能
-	//========================
-	constexpr int MaxBoxes = 10;
-
-	// インベントリUI
-	const RectF invPanel{ 10, 90, 320, 84 };          // インベントリ表示領域
-	const Vec2  genBtnPos{ 20, 180 };                 // 「箱を生成」ボタン位置
-	const Vec2  helpPos{ 20, 220 };
-
-	Array<bool> boxes; // 未開封の箱（true/false は使わない。要素が1つ=箱1つ）
-	boxes.reserve(MaxBoxes);
-
-	enum class TokenType : int32 { GreenTriangle, YellowCircle, PurpleSquare };
-	struct Token
-	{
-		TokenType type{};
-		Vec2 pos{};
-		bool dragging{ false };
-		Vec2 dragOffset{};
-	};
-	Array<Token> tokens;
-
-	auto RandomTokenType = []() -> TokenType
-		{
-			const int r = Random(0, 2);
-			if (r == 0) return TokenType::GreenTriangle;
-			if (r == 1) return TokenType::YellowCircle;
-			return TokenType::PurpleSquare;
-		};
-
-	auto TokenColor = [](TokenType t) -> ColorF
-		{
-			switch (t)
-			{
-			case TokenType::GreenTriangle: return ColorF{ 0.20, 0.90, 0.35 };
-			case TokenType::YellowCircle:  return ColorF{ 1.00, 0.90, 0.25 };
-			case TokenType::PurpleSquare:  return ColorF{ 0.70, 0.40, 0.90 };
-			}
-			return Palette::White;
-		};
-
-	// 発動エフェクト（簡易リング）
-	struct Burst { Vec2 pos; ColorF col; double time; };
-	Array<Burst> bursts;
-
-	// 特性発動（同種3つ以上を重ねた時）
-	auto ActivateTrait = [&](TokenType type, const Vec2& center)
-		{
-			// 可視化
-			bursts << Burst{ center, TokenColor(type), 0.35 };
-
-			if (type == TokenType::GreenTriangle)
-			{
-				// 赤色セルだけを広く Blue に塗り替える
-				const Point c = PosToCell(center);
-
-				// セル単位の半径（広さを調整：例 8 → 半径8セル ≒ 320px）
-				const int rCells = 8;
-				const int r2 = rCells * rCells;
-
-				for (int dy = -rCells; dy <= rCells; ++dy)
-				{
-					for (int dx = -rCells; dx <= rCells; ++dx)
-					{
-						if ((dx * dx + dy * dy) > r2) continue; // 円領域
-
-						const Point p = c + Point{ dx, dy };
-						if (!InBounds(p)) continue;
-
-						// 壁のあるセルは塗らない（仕様を合わせる）
-						const int bi = buildingAt[p];
-						if (bi != -1 && buildings[bi].type == BType::Wall)
-						{
-							continue;
-						}
-
-						// 赤セルのみ Blue に変換
-						if (owner[p] == Team::Red)
-						{
-							owner[p] = Team::Blue;
-						}
-					}
-				}
-			}
-			else if (type == TokenType::YellowCircle)
-			{
-				// 周囲の弾を消す + 資金ボーナス
-				const double radius = 160.0;
-				Array<Bullet> alive;
-				alive.reserve(bullets.size());
-				for (const auto& b : bullets)
-				{
-					if (b.pos.distanceFrom(center) > radius)
-						alive << b;
-				}
-				bullets.swap(alive);
-				moneyBlue += 50.0;
-			}
-			else if (type == TokenType::PurpleSquare)
-			{
-				// 中心セルの上下左右に壁を無料設置（置ける場所のみ）
-				const Point c = PosToCell(center);
-				const Point d4[4] = { {0,-1},{1,0},{0,1},{-1,0} };
-				for (const auto& d : d4)
-				{
-					const Point p = c + d;
-					if (IsCellPlaceable(Team::Blue, p, BType::Wall))
-					{
-						PlaceBuilding(BType::Wall, Team::Blue, p);
-					}
-				}
-			}
-		};
-	//========================
-	// 要塞を初期配置（図形描画用）
-	//========================
-	{
-		const Point blueFortCell = Point{ Max(1, blueTowerCell.x - 3), Max(1, blueTowerCell.y - 2) };
-		if (InBounds(blueFortCell) && (buildingAt[blueFortCell] == -1) && (owner[blueFortCell] == Team::Blue))
-		{
-			PlaceBuilding(BType::Fortress, Team::Blue, blueFortCell);
 		}
-		const Point redFortCell = Point{ Min(gridCount.x - 2, redTowerCell.x + 3), Max(1, redTowerCell.y - 2) };
-		if (InBounds(redFortCell) && (buildingAt[redFortCell] == -1) && (owner[redFortCell] == Team::Red))
-		{
-			PlaceBuilding(BType::Fortress, Team::Red, redFortCell);
+
+		// HQ 設置
+		Point bHQ{ 3, GH / 2 };
+		Point rHQ{ GW - 4, GH / 2 };
+		brd.tiles[brd.idx(bHQ.x, bHQ.y)].kind = TileKind::HQBlue;
+		brd.tiles[brd.idx(rHQ.x, rHQ.y)].kind = TileKind::HQRed;
+		brd.tiles[brd.idx(bHQ.x, bHQ.y)].paint = 1.0f;
+		brd.tiles[brd.idx(rHQ.x, rHQ.y)].paint = 0.0f;
+
+		blues.clear(); reds.clear();
+		tracers.clear(); particles.clear(); projectiles.clear();
+		stageCleared = false;
+		turnCount = 1;
+		phase = Phase::Planning;
+
+		Structure sb; sb.owner = Team::Blue; sb.type = StructureType::HQ; sb.cell = bHQ; sb.hp = GetSpec(StructureType::HQ).maxHP; sb.alive = true;
+		Structure sr; sr.owner = Team::Red;  sr.type = StructureType::HQ; sr.cell = rHQ; sr.hp = GetSpec(StructureType::HQ).maxHP; sr.alive = true;
+		blues << sb; reds << sr;
+		brd.blueIndex[brd.idx(bHQ.x, bHQ.y)] = 0;
+		brd.redIndex[brd.idx(rHQ.x, rHQ.y)] = 0;
+		blueHQ = 0; redHQ = 0;
+
+		auto placeRed = [&](StructureType t, Point c) {
+			if (!brd.inBounds(c.x, c.y)) return;
+			if (brd.tiles[brd.idx(c.x, c.y)].kind != TileKind::Floor) return;
+			if (brd.redIndex[brd.idx(c.x, c.y)] != -1) return;
+			if (brd.blueIndex[brd.idx(c.x, c.y)] != -1) return;
+			Structure s; s.owner = Team::Red; s.type = t; s.cell = c; s.hp = GetSpec(t).maxHP; s.alive = true;
+			reds << s;
+			brd.redIndex[brd.idx(c.x, c.y)] = (int)reds.size() - 1;
+			brd.tiles[brd.idx(c.x, c.y)].paint = 0.2f;
+			};
+		placeRed(StructureType::Basic, Point{ GW - 7, GH / 2 - 3 });
+		placeRed(StructureType::Sprinkler, Point{ GW - 8, GH / 2 + 2 });
+		placeRed(StructureType::Mortar, Point{ GW - 10, GH / 2 });
+
+		if (stageNo >= 2) {
+			placeRed(StructureType::Basic, Point{ GW - 12, GH / 2 - 6 });
+			placeRed(StructureType::Sniper, Point{ GW - 8,  GH / 2 - 1 });
+		}
+		if (stageNo >= 3) {
+			placeRed(StructureType::Mortar, Point{ GW - 14, GH / 2 + 5 });
+			placeRed(StructureType::Sprinkler, Point{ GW - 6,  GH / 2 + 6 });
+		}
+
+		moneyBlue = 120 + 20 * (stageNo - 1);
+		moneyRed = 140 + 40 * (stageNo - 1);
+
+		stageStarting = true;
+		stageBannerT = 0.0;
+
+		clearShakeAndHitStop();
+	}
+
+	// 画面シェイク
+	void AddShake(double p, double d) { shakePow = Max(shakePow, p); shakeDur = Max(shakeDur, d); shakeT = Max(shakeT, d); }
+	Vec2 GetShakeOffset() {
+		if (shakeT <= 0.0 || shakeDur <= 0.0) return Vec2{ 0,0 };
+		const double k = (shakeT / shakeDur);
+		const double amp = shakePow * (0.25 + 0.75 * k);
+		return RandomVec2(Circle{ amp });
+	}
+
+	// 演出更新（フェーズに関わらず毎フレーム呼ぶ）
+	void updateEffectsEveryFrame(double dtReal) {
+		if (hitStopTimer > 0.0) {
+			hitStopTimer -= dtReal;
+			if (hitStopTimer < 0.0) hitStopTimer = 0.0;
+		}
+		if (shakeT > 0.0) {
+			shakeT -= dtReal;
+			if (shakeT <= 0.0) { shakeT = 0.0; shakeDur = 0.0; shakePow = 0.0; }
 		}
 	}
 
-	// UI 補助
-	auto DrawHPBar = [&](const Rect& r, int hp, int maxHP)
-		{
-			const double ratio = (maxHP > 0 ? Clamp<double>(static_cast<double>(hp) / maxHP, 0.0, 1.0) : 0.0);
-			const RectF barBG{ r.x + 4, r.y - 10, r.w - 8, 6 };
-			const RectF barFG{ barBG.x, barBG.y, (barBG.w * ratio), barBG.h };
-			barBG.draw(ColorF{ 0,0,0,0.35 });
-			barFG.draw(ColorF{ 0.2, 0.9, 0.3, 0.9 });
-			barBG.drawFrame(1, ColorF{ 0,0,0,0.6 });
-		};
+	void clearShakeAndHitStop() {
+		shakeT = shakeDur = shakePow = 0.0;
+		hitStopTimer = 0.0;
+		timeScale = 1.0;
+	}
 
-	while (System::Update())
-	{
-		const double dt = Scene::DeltaTime();
-
-		// 入力（建設選択）— 勝敗決着後は無効
-		if (gameState == GameState::Playing)
-		{
-			if (Key1.down()) selected = BType::Turret;
-			if (Key2.down()) selected = BType::Facility;
-			if (Key3.down()) selected = BType::Wall;
-			if (Key4.down()) selected = BType::Fortress; // 要塞（各陣営 1 基まで）
+	// パーティクル
+	void SpawnParticles(const Vec2& p, const ColorF& col, int n, double vmin = 80, double vmax = 180, double lifeMin = 0.25, double lifeMax = 0.6, double s0 = 3, double s1 = 14) {
+		for (int i = 0; i < n; ++i) {
+			const double a = Random(0.0, Math::TwoPi);
+			const double sp = Random(vmin, vmax);
+			Particle fx;
+			fx.pos = p;
+			fx.vel = Vec2{ Cos(a), Sin(a) } * sp;
+			fx.col = col;
+			fx.age = 0.0; fx.life = Random(lifeMin, lifeMax);
+			fx.size0 = Random(s0 * 0.8, s0 * 1.2);
+			fx.size1 = Random(s1 * 0.8, s1 * 1.2);
+			particles << fx;
 		}
+	}
 
-		// ホバーセル
-		const Point hoveredCell{
-			Clamp<int32>(Cursor::Pos().x / CellSize.x, 0, (gridCount.x - 1)),
-			Clamp<int32>(Cursor::Pos().y / CellSize.y, 0, (gridCount.y - 1))
-		};
+	// 勝敗条件チェック
+	bool isBlueWin() const {
+		auto [bp, rp] = Ownership(brd);
+		const bool redHQDead = (redHQ >= 0 && !reds[redHQ].alive);
+		return (bp >= 0.98) || redHQDead;
+	}
+	bool isBlueLose() const {
+		auto [bp, rp] = Ownership(brd);
+		const bool blueHQDead = (blueHQ >= 0 && !blues[blueHQ].alive);
+		return (rp >= 0.98) || blueHQDead;
+	}
 
-		// プレイヤー配置（建物）
-		if (gameState == GameState::Playing && MouseL.down() && gridArea.mouseOver())
-		{
-			int cost = 0;
-			switch (selected)
-			{
-			case BType::Turret:   cost = turretCost;   break;
-			case BType::Facility: cost = facilityCost; break;
-			case BType::Wall:     cost = wallCost;     break;
-			case BType::Fortress: cost = fortressCost; break;
-			default: break;
+	// 敵AIの簡易設置
+	void enemyPlaceAI() {
+		int tries = 18;
+		const int minCost = Min(CostBasic, Min(CostSprinkler, CostMortar));
+		while (tries-- > 0) {
+			if (moneyRed < minCost) break;
+
+			Array<StructureType> bag;
+			if (moneyRed >= CostBasic)     bag << StructureType::Basic;
+			if (moneyRed >= CostSprinkler) bag << StructureType::Sprinkler;
+			if (moneyRed >= CostMortar)    bag << StructureType::Mortar;
+			if (stage >= 2 && moneyRed >= CostSniper && RandomBool(0.35)) bag << StructureType::Sniper;
+			if (moneyRed >= CostPump && RandomBool(0.25)) bag << StructureType::Pump;
+			if (bag.isEmpty()) break;
+
+			const StructureType pick = bag.choice();
+			for (int k = 0; k < 100; ++k) {
+				const int x = Random(GW / 2 + 1, GW - 2);
+				const int y = Random(1, GH - 2);
+				if (brd.tiles[brd.idx(x, y)].kind != TileKind::Floor) continue;
+				if (brd.redIndex[brd.idx(x, y)] != -1) continue;
+				if (brd.blueIndex[brd.idx(x, y)] != -1) continue;
+
+				const float p = brd.tiles[brd.idx(x, y)].paint;
+				if (p > 0.45f) continue;
+
+				Structure s; s.owner = Team::Red; s.type = pick; s.cell = { x, y };
+				s.hp = GetSpec(pick).maxHP; s.alive = true;
+				reds << s;
+				brd.redIndex[brd.idx(x, y)] = (int)reds.size() - 1;
+				moneyRed -= GetSpec(pick).cost;
+				break;
 			}
+		}
+	}
 
-			if (moneyBlue >= cost && IsCellPlaceable(Team::Blue, hoveredCell, selected))
-			{
-				if (PlaceBuilding(selected, Team::Blue, hoveredCell))
-				{
-					moneyBlue -= cost;
+	// ===================== シミュレーション処理 =====================
+	void beginSimulation() {
+		phase = Phase::Simulating;
+		simTime = SimDuration;
+		simElapsed = 0.0;
+		tracers.clear();
+		projectiles.clear();
+
+		auto setup = [&](Array<Structure>& a) {
+			for (auto& s : a) {
+				if (!s.alive) continue;
+				const TypeSpec& spec = GetSpec(s.type);
+				if (spec.shots > 0) {
+					s.interval = (SimDuration / spec.shots);
+					s.nextFire = 0.0;
+				}
+				else {
+					s.interval = 9999.0;
+					s.nextFire = 9999.0;
+				}
+			}
+			};
+		setup(blues);
+		setup(reds);
+
+		stageStarting = false;
+	}
+
+	void endSimulationAndScore() {
+		auto [bp, rp] = Ownership(brd);
+		const int blueTiles = (int)(bp * GW * GH);
+		const int redTiles = (int)(rp * GW * GH);
+		moneyBlue += blueTiles * IncomePerTile;
+		moneyRed += redTiles * IncomePerTile;
+
+		int bluePump = 0, redPump = 0;
+		for (const auto& s : blues) if (s.alive && s.type == StructureType::Pump) ++bluePump;
+		for (const auto& s : reds)  if (s.alive && s.type == StructureType::Pump)  ++redPump;
+		moneyBlue += bluePump * IncomePerPump;
+		moneyRed += redPump * IncomePerPump;
+
+		enemyPlaceAI();
+
+		phase = Phase::Planning;
+		turnCount += 1;
+	}
+
+	void gotoNextStage() {
+		for (int i = 0; i < 10; ++i) {
+			SpawnParticles(brd.gridRect.center() + RandomVec2(Circle{ brd.gridRect.h * 0.2 }),
+						   HSV{ 120 + Random(-20, 20), 0.8, 1.0 }, 30, 120, 260, 0.4, 0.9, 3, 18);
+		}
+		moneyBlue = Min(moneyBlue + 60, 9999);
+		moneyRed = 140 + 40 * (stage);
+		stage += 1;
+		buildMapForStage(stage);
+		clearShakeAndHitStop();
+	}
+
+	// タイル塗り（値の加算、0..1に丸め）
+	void applyPaintAt(const Point& c, double delta) {
+		if (!brd.inBounds(c.x, c.y)) return;
+		Tile& t = brd.tiles[brd.idx(c.x, c.y)];
+		const double nv = (double)t.paint + delta;
+		t.paint = (float)(nv < 0.0 ? 0.0 : (nv > 1.0 ? 1.0 : nv));
+	}
+
+	// 構造体ダメージ（破壊時はグリッドから抜く）
+	void damageAt(const Point& c, double dmg, Team attacker) {
+		if (!brd.inBounds(c.x, c.y)) return;
+		if (attacker == Team::Blue) {
+			int idxR = brd.redIndex[brd.idx(c.x, c.y)];
+			if (idxR >= 0) {
+				Structure& s = reds[idxR];
+				if (!s.alive) return;
+				s.hp -= dmg;
+				if (s.hp <= 0.0) {
+					s.alive = false;
+					brd.redIndex[brd.idx(c.x, c.y)] = -1;
+					applyPaintAt(c, +0.20);
+					SpawnParticles(brd.cellCenter(c), HSV{ 0,0.7,1.0 }, 28, 150, 320, 0.30, 0.6, 3, 20);
+					AddShake(8.0, 0.15);
+					hitStopTimer = Max(hitStopTimer, 0.04);
 				}
 			}
 		}
-
-		// タレットの自動射撃 — 勝敗決着後は停止
-		if (gameState == GameState::Playing)
-		{
-			for (auto& b : buildings)
-			{
-				if (!b.alive) continue;
-				if (b.type != BType::Turret) continue;
-
-				b.cooldown -= dt;
-				if (b.cooldown <= 0.0)
-				{
-					const Optional<Point> tgt = ChooseTargetForTurret(b.team, b.cell);
-					if (tgt)
-					{
-						const Vec2 from = CellCenter(b.cell);
-						const Vec2 to = CellCenter(tgt.value());
-						const Vec2 vel = (to - from).withLength(bulletSpeed);
-
-						bullets << Bullet{
-							.pos = from,
-							.vel = vel,
-							.targetCell = tgt.value(),
-							.team = b.team,
-							.color = TeamColor(b.team)
-						};
-						b.cooldown = fireCooldown;
-					}
-					else
-					{
-						// 狙えるものが無ければ少し待つ
-						b.cooldown = 0.25;
-					}
+		else if (attacker == Team::Red) {
+			int idxB = brd.blueIndex[brd.idx(c.x, c.y)];
+			if (idxB >= 0) {
+				Structure& s = blues[idxB];
+				if (!s.alive) return;
+				s.hp -= dmg;
+				if (s.hp <= 0.0) {
+					s.alive = false;
+					brd.blueIndex[brd.idx(c.x, c.y)] = -1;
+					applyPaintAt(c, -0.20);
+					SpawnParticles(brd.cellCenter(c), HSV{ 210,0.7,1.0 }, 28, 150, 320, 0.30, 0.6, 3, 20);
+					AddShake(8.0, 0.15);
+					hitStopTimer = Max(hitStopTimer, 0.04);
 				}
 			}
 		}
+	}
 
-		// 弾更新・着弾処理 — 勝敗決着後は停止
-		if (gameState == GameState::Playing)
-		{
-			Array<Bullet> aliveBullets;
-			aliveBullets.reserve(bullets.size());
+	// AoE 適用（半径 r タイル）
+	void applyAOE(const Point& center, int r, double paintDelta, double dmg, Team atk) {
+		const int r2 = r * r;
+		for (int dy = -r; dy <= r; ++dy) for (int dx = -r; dx <= r; ++dx) {
+			const int d2 = dx * dx + dy * dy;
+			if (d2 > r2) continue;
+			Point c{ center.x + dx, center.y + dy };
+			if (!brd.inBounds(c.x, c.y)) continue;
+			const double w = 1.0 - Sqrt((double)d2) / (double)(r + 0.001);
+			applyPaintAt(c, paintDelta * (0.5 + 0.5 * w));
+			if (dmg > 0.0) damageAt(c, dmg * (0.6 + 0.4 * w), atk);
+		}
+	}
 
-			for (auto& bl : bullets)
-			{
-				bl.pos += (bl.vel * dt);
-
-				const Vec2 targetPos = CellCenter(bl.targetCell);
-				if (bl.pos.distanceFrom(targetPos) <= bulletRadius)
-				{
-					// 建物チェック
-					const int32 bi = buildingAt[bl.targetCell];
-					if (bi != -1)
-					{
-						Building& bd = buildings[bi];
-						if (!bd.alive)
-						{
-							// 既に破壊済みなら無視して塗りに進む
-						}
-						else if (bd.type == BType::Wall)
-						{
-							// 壁で無効化（塗れない・ダメージなし）
-							continue;
-						}
-						else if (bd.type == BType::Fortress)
-						{
-							// 要塞にダメージ（敵弾のみ）
-							if (bd.team != bl.team)
-							{
-								bd.hp -= fortressHitDamage;
-								// ヒットエフェクト（簡易）
-								Circle{ targetPos, 10 }.draw(ColorF{ 1,0.2,0.2,0.25 });
-								if (bd.hp <= 0)
-								{
-									bd.hp = 0;
-									bd.alive = false;
-									buildingAt[bd.cell] = -1;
-
-									// 勝敗判定
-									if (bd.team == Team::Blue)
-									{
-										gameState = GameState::BlueLose; // プレイヤー要塞破壊 → Game Over
-									}
-									else if (bd.team == Team::Red)
-									{
-										gameState = GameState::BlueWin;  // 敵要塞破壊 → Clear
-									}
-								}
-							}
-							// 命中した弾は消える（塗りはしない）
-							continue;
-						}
+	// ターゲット選択（敵タレット優先 / 敵色寄り）
+	Optional<Point> findTargetCell(Team atk, const Point& from, int range, bool turretOnly) const {
+		Array<Point> cands;
+		for (int y = Max(0, from.y - range); y <= Min(GH - 1, from.y + range); ++y) {
+			for (int x = Max(0, from.x - range); x <= Min(GW - 1, from.x + range); ++x) {
+				const Point p{ x, y };
+				if (TileDist(from, p) > (double)range + 0.001) continue;
+				const Tile& t = brd.tiles[brd.idx(x, y)];
+				if (turretOnly) {
+					if (atk == Team::Blue) {
+						if (brd.redIndex[brd.idx(x, y)] >= 0) cands << p;
 					}
+					else {
+						if (brd.blueIndex[brd.idx(x, y)] >= 0) cands << p;
+					}
+				}
+				else {
+					const bool enemyish = (atk == Team::Blue ? (t.paint < 0.45f) : (t.paint > 0.55f));
+					if (enemyish) cands << p;
+				}
+			}
+		}
+		if (!cands.isEmpty()) return cands.choice();
 
-					// 建物に阻まれなかった場合はセルを塗る
-					owner[bl.targetCell] = bl.team;
+		Array<Point> any;
+		for (int y = Max(0, from.y - range); y <= Min(GH - 1, from.y + range); ++y) {
+			for (int x = Max(0, from.x - range); x <= Min(GW - 1, from.x + range); ++x) {
+				const Point p{ x, y };
+				if (TileDist(from, p) > (double)range + 0.001) continue;
+				if (brd.tiles[brd.idx(x, y)].kind == TileKind::Wall) continue;
+				any << p;
+			}
+		}
+		if (!any.isEmpty()) return any.choice();
+		return none;
+	}
+
+	// 弾を登録（マズルフラッシュ/薬莢/トレーサーなどの演出もここ）
+	void spawnProjectile(Team atk, const TypeSpec& spec, const Vec2& muzzle, const Point& targetCell, ProjKind k, bool useArc, bool blocked, bool indirect, int aoe, double dmg, double paint, double speed, double radiusPx) {
+		Projectile pr;
+		pr.kind = k;
+		pr.owner = atk;
+		pr.blockedByWalls = blocked;
+		pr.indirect = indirect;
+		pr.aoeRadius = aoe;
+		pr.damage = dmg;
+		pr.paint = paint;
+		pr.radius = radiusPx;
+		pr.targetCell = targetCell;
+		pr.pos = muzzle;
+		pr.life = 3.0;
+
+		const Vec2 hitPos = brd.cellCenter(targetCell);
+
+		if (useArc) {
+			pr.useArc = true;
+			pr.startPos = muzzle;
+			pr.endPos = hitPos;
+			// 見た目用の山（上に持ち上げる）
+			const Vec2 mid = (muzzle + hitPos) * 0.5;
+			const double dist = (hitPos - muzzle).length();
+			const double h = 60.0 + 0.25 * dist; // 距離に応じて高く
+			pr.apexPos = mid + Vec2{ 0, -h };
+			pr.u = 0.0;
+			pr.pathLen = dist;
+			pr.pathSpeed = speed;
+		}
+		else {
+			pr.useArc = false;
+			Vec2 dir = (hitPos - muzzle);
+			const double len = dir.length();
+			if (len > 0.0) dir *= (speed / len);
+			else dir = Vec2{ 0,0 };
+			pr.vel = dir;
+		}
+
+		projectiles << pr;
+
+		// マズルフラッシュ＆発射煙
+		SpawnParticles(muzzle, TeamColor(atk), 6, 120, 260, 0.08, 0.22, 3, 10);
+		tracers << Tracer{ muzzle, muzzle + (hitPos - muzzle).setLength(18.0), TeamColor(atk).withAlpha(0.9), 0.0, 0.12 };
+	}
+
+	// 1発発射（弾を生成する）
+	void fireOnce(Structure& s, Team atk) {
+		const TypeSpec& spec = GetSpec(s.type);
+		if (spec.shots <= 0) return;
+
+		const Vec2 muzzle = brd.cellCenter(s.cell);
+
+		if (s.type == StructureType::Sprinkler) {
+			// 自身の周囲に小弾を複数散布
+			for (int i = 0; i < 3; ++i) {
+				// 周囲のランダムなセル
+				Point tc = s.cell + Point{ Random(-spec.range, spec.range), Random(-spec.range, spec.range) };
+				tc.x = limit(tc.x, 0, GW - 1);
+				tc.y = limit(tc.y, 0, GH - 1);
+				spawnProjectile(atk, spec, muzzle, tc,
+					ProjKind::Droplet, false, false, false, 0, spec.damage * 0.15, spec.paint * 0.9, spec.projSpeed, spec.projRadius * 0.9);
+			}
+			return;
+		}
+
+		Optional<Point> opt = findTargetCell(atk, s.cell, spec.range, spec.targetTurretOnly);
+		if (!opt) return;
+		Point target = *opt;
+
+		// ブレ（Mortar / Basic）
+		if (spec.spread > 0.05) {
+			target.x += Random(-(int)spec.spread, (int)spec.spread);
+			target.y += Random(-(int)spec.spread, (int)spec.spread);
+			target.x = limit(target.x, 0, GW - 1);
+			target.y = limit(target.y, 0, GH - 1);
+		}
+
+		if (s.type == StructureType::Mortar) {
+			spawnProjectile(atk, spec, muzzle, target,
+				ProjKind::Mortar, true, false, true, spec.aoeRadius, spec.damage, spec.paint, spec.projSpeed, spec.projRadius);
+		}
+		else if (s.type == StructureType::Sniper) {
+			spawnProjectile(atk, spec, muzzle, target,
+				ProjKind::Sniper, false, true, false, 0, spec.damage, spec.paint, spec.projSpeed, spec.projRadius);
+		}
+		else { // Basic
+			spawnProjectile(atk, spec, muzzle, target,
+				ProjKind::Bullet, false, true, false, 0, spec.damage, spec.paint, spec.projSpeed, spec.projRadius);
+		}
+	}
+
+	// 弾の進行・衝突処理
+	void updateProjectiles(double dtReal) {
+		const double dt = dtReal;
+
+		Array<Projectile> alive;
+
+		for (auto& pr : projectiles) {
+			pr.age += dt;
+			if (pr.age > pr.life) {
+				continue; // 消滅
+			}
+
+			Vec2 prev = pr.pos;
+
+			// 放物線 or 直進
+			if (pr.useArc) {
+				// 経路パラメータ更新
+				const double du = (pr.pathSpeed / Max(1.0, pr.pathLen)) * dt;
+				pr.u += du;
+				double u = pr.u; if (u > 1.0) u = 1.0;
+				const double v = (1.0 - u);
+				pr.pos = (v * v) * pr.startPos + (2.0 * v * u) * pr.apexPos + (u * u) * pr.endPos;
+
+				// 軌跡
+				tracers << Tracer{ prev, pr.pos, TeamColor(pr.owner), 0.0, 0.10 };
+
+				// 到達
+				if (pr.u >= 1.0) {
+					const Point ic = brd.screenToCell(pr.endPos).value_or(pr.targetCell);
+					impactAt(pr, ic);
 					continue;
 				}
-
-				aliveBullets << bl;
+				alive << pr;
 			}
+			else {
+				// 直進（衝突はサブステップで検出）
+				Vec2 remain = pr.vel * dt;
+				int subSteps = Max(1, (int)Ceil(remain.length() / (brd.tileSize * 0.5)));
+				Vec2 step = remain / (double)subSteps;
+				bool hit = false;
+				for (int i = 0; i < subSteps; ++i) {
+					prev = pr.pos;
+					pr.pos += step;
 
-			bullets.swap(aliveBullets);
-		}
-
-		// タワー浸食処理 — 勝敗決着後も一旦停止（今回は勝敗に関与させない）
-		if (gameState == GameState::Playing)
-		{
-			for (auto& b : buildings)
-			{
-				if (!b.alive) continue;
-				if (b.type != BType::Tower) continue;
-
-				int enemyCount = 0;
-				const Team enemyTeam = (b.team == Team::Blue ? Team::Red : Team::Blue);
-
-				for (int dy = -1; dy <= 1; ++dy)
-				{
-					for (int dx = -1; dx <= 1; ++dx)
-					{
-						if (dx == 0 && dy == 0) continue;
-						const Point p = b.cell + Point{ dx, dy };
-						if (!InBounds(p)) continue;
-						if (owner[p] == enemyTeam) ++enemyCount;
-					}
-				}
-
-				if (enemyCount >= captureNeed)
-				{
-					b.capture = Min(captureTime, b.capture + dt);
-				}
-				else
-				{
-					b.capture = Max(0.0, b.capture - dt * 0.5);
-				}
-
-				if (b.capture >= captureTime)
-				{
-					// タワーの所有権を移す（今回は勝敗に影響しない）
-					b.team = (b.team == Team::Blue ? Team::Red : Team::Blue);
-					owner[b.cell] = b.team;
-					b.capture = 0.0;
-				}
-			}
-		}
-
-		// 経済（毎秒）— 勝敗決着後は停止
-		if (gameState == GameState::Playing)
-		{
-			incomeTimer += dt;
-			while (incomeTimer >= 1.0)
-			{
-				incomeTimer -= 1.0;
-				DoIncomeTick();
-			}
-		}
-
-		// AI（簡易）：定期的に建設 — 勝敗決着後は停止
-		if (gameState == GameState::Playing)
-		{
-			aiBuildTimer += dt;
-			if (aiBuildTimer >= 2.0)
-			{
-				aiBuildTimer = 0.0;
-
-				// 建てるものを選ぶ（資金に応じて）
-				struct Choice { BType t; int cost; double w; };
-				Array<Choice> pool;
-
-				if (moneyRed >= turretCost)   pool << Choice{ BType::Turret,   turretCost,   0.5 };
-				if (moneyRed >= facilityCost) pool << Choice{ BType::Facility, facilityCost, 0.35 };
-				if (moneyRed >= wallCost)     pool << Choice{ BType::Wall,     wallCost,     0.15 };
-
-				if (!pool.isEmpty())
-				{
-					// 重み選択
-					const double totalW = pool.map([](const Choice& c) { return c.w; }).sum();
-					double r = Random(0.0, totalW);
-					BType pick = pool.back().t;
-					int cost = pool.back().cost;
-					for (const auto& c : pool)
-					{
-						if ((r -= c.w) <= 0.0) { pick = c.t; cost = c.cost; break; }
-					}
-
-					// 自陣の空きマスからランダム
-					Array<Point> candidates;
-					for (int y = 0; y < gridCount.y; ++y)
-					{
-						for (int x = 0; x < gridCount.x; ++x)
-						{
-							const Point p{ x, y };
-							// Red 陣営の条件
-							const bool placeable = (InBounds(p) && buildingAt[p] == -1 && owner[p] == Team::Red);
-							if (placeable)
-							{
-								candidates << p;
+					// 壁衝突判定（貫通不可のみ）
+					if (pr.blockedByWalls && !pr.indirect) {
+						if (const auto oc = brd.posToCell(pr.pos)) {
+							const TileKind k = brd.tiles[brd.idx(oc->x, oc->y)].kind;
+							if (k == TileKind::Wall) {
+								// 一つ前の位置で停止、そこを着弾に
+								const Point ic = brd.posToCell(prev).value_or(*oc);
+								impactAt(pr, ic);
+								hit = true;
+								break;
 							}
 						}
-					}
-					if (!candidates.isEmpty())
-					{
-						const Point c = candidates.choice();
-						if (PlaceBuilding(pick, Team::Red, c))
-						{
-							moneyRed -= cost;
+						else {
+							// 盤面外
+							hit = true; break;
 						}
 					}
+					// 目標セル到達チェック（近似）
+					if (const auto tc = brd.posToCell(pr.pos)) {
+						if (tc->x == pr.targetCell.x && tc->y == pr.targetCell.y) {
+							impactAt(pr, *tc);
+							hit = true;
+							break;
+						}
+					}
+					// トレイル
+					tracers << Tracer{ prev, pr.pos, TeamColor(pr.owner), 0.0, 0.08 };
 				}
-			}
-		}
-
-		//========================
-		// 描画
-		//========================
-
-		// 描画: グリッド背景
-		gridArea.draw(ColorF{ 0.97 });
-
-		// タイルの色
-		for (int y = 0; y < gridCount.y; ++y)
-		{
-			for (int x = 0; x < gridCount.x; ++x)
-			{
-				const Team t = owner[y][x];
-				if (t == Team::None) continue;
-
-				ColorF c = TeamColor(t);
-				c.a = 0.80;
-				CellRect(Point{ x, y }).stretched(-1).draw(c);
-			}
-		}
-
-		// グリッド線
-		for (int y = 0; y <= gridCount.y; ++y)
-		{
-			const int ypx = (y * CellSize.y);
-			Line{ 0, ypx, gridArea.w, ypx }.draw(ColorF{ 0.0, 0.0, 0.0, 0.14 });
-		}
-		for (int x = 0; x <= gridCount.x; ++x)
-		{
-			const int xpx = (x * CellSize.x);
-			Line{ xpx, 0, xpx, gridArea.h }.draw(ColorF{ 0.0, 0.0, 0.0, 0.14 });
-		}
-
-		// 建物の描画
-		for (const auto& b : buildings)
-		{
-			if (!b.alive) continue;
-
-			const Rect r = CellRect(b.cell).stretched(-3);
-			const ColorF base = TeamColor(b.team);
-
-			if (b.type == BType::Tower)
-			{
-				r.stretched(-2).rounded(6).draw(base);
-				r.rounded(6).drawFrame(3, ColorF{ 0,0,0,0.5 });
-				// 浸食ゲージ
-				if (b.capture > 0.0)
-				{
-					const double ratio = (b.capture / captureTime);
-					const double rad = (Min(r.w, r.h) * 0.5 - 6);
-					Circle{ r.center(), rad }.drawArc(-90_deg, (360_deg * ratio), 4, 4, ColorF{ 1,1,1,0.9 });
-				}
-			}
-			else if (b.type == BType::Turret)
-			{
-				r.stretched(-4).rounded(4).draw(base);
-				r.drawFrame(2, ColorF{ 0,0,0,0.45 });
-			}
-			else if (b.type == BType::Facility)
-			{
-				const Rect rf = r.stretched(-6);
-				Triangle{ rf.center(), rf.w / 2.0, 0_deg }.draw(base);
-				r.drawFrame(2, ColorF{ 0,0,0,0.45 });
-			}
-			else if (b.type == BType::Wall)
-			{
-				r.draw(ColorF{ 0.15,0.15,0.15 });
-				r.drawFrame(2, base);
-			}
-			else if (b.type == BType::Fortress)
-			{
-				const Vec2  c = r.center();
-				// 外壁リング
-				const double ringR = Min(r.w, r.h) * 0.5 - 4;
-				Circle{ c, ringR }.drawFrame(4, base);
-				Circle{ c, ringR - 6 }.drawFrame(2, ColorF{ 0,0,0,0.35 });
-				// 天守（中心の丸み四角）
-				const RectF keep = r.stretched(-10);
-				keep.rounded(5).draw(base);
-				keep.rounded(5).drawFrame(2, ColorF{ 0,0,0,0.45 });
-				// 四隅の小塔（円）
-				const double tr = 5.0;
-				Circle{ r.tl().movedBy(10, 10), tr }.draw(base);
-				Circle{ r.tr().movedBy(-10, 10), tr }.draw(base);
-				Circle{ r.bl().movedBy(10, -10), tr }.draw(base);
-				Circle{ r.br().movedBy(-10, -10), tr }.draw(base);
-				// 門（下側）
-				RectF{ c.x - 5, r.y + r.h - 10, 10, 8 }.draw(ColorF{ 0,0,0,0.6 });
-				// 旗（上部）
-				Triangle{ r.topCenter().movedBy(0, 6), 9, 0_deg }.draw(base);
-				Line{ r.topCenter().movedBy(0, 6), r.topCenter().movedBy(0, 20) }.draw(2, base);
-				// HPバー
-				DrawHPBar(r, b.hp, b.maxHP);
-			}
-		}
-
-		// 弾を描画
-		for (const auto& bl : bullets)
-		{
-			Circle{ bl.pos, bulletRadius }.draw(bl.color);
-			Line{ bl.pos, (bl.pos - bl.vel.withLength(24.0)) }.draw(4, bl.color.withAlpha(0.45));
-		}
-
-		// トークン描画（クリップ）
-		{
-			//const ScopedScissorRect2D scissor{ gridArea };
-			for (const auto& t : tokens)
-			{
-				const ColorF col = TokenColor(t.type);
-				if (t.type == TokenType::GreenTriangle)
-				{
-					Triangle{ t.pos, 16, 0_deg }.draw(col);
-				}
-				else if (t.type == TokenType::YellowCircle)
-				{
-					Circle{ t.pos, 10 }.draw(col);
-					Circle{ t.pos, 10 }.drawFrame(2, ColorF{ 0,0,0,0.35 });
-				}
-				else if (t.type == TokenType::PurpleSquare)
-				{
-					RectF{ t.pos.x - 10, t.pos.y - 10, 20, 20 }.rounded(4).draw(col);
-				}
-			}
-		}
-
-		// ホバー中セルのハイライトとタレット射程プレビュー
-		if (gameState == GameState::Playing)
-		{
-			const Rect r = CellRect(hoveredCell).stretched(-2);
-			const bool can =
-				(InBounds(hoveredCell)
-				 && buildingAt[hoveredCell] == -1
-				 && owner[hoveredCell] == Team::Blue
-				 && (selected != BType::Fortress || CountAliveFortress(Team::Blue) < 1));
-			if (can) r.draw(ColorF{ 0.2, 0.8, 0.3, 0.20 });
-			r.drawFrame(2, can ? ColorF{ 0.2, 0.8, 0.3, 0.9 } : ColorF{ 0.8, 0.2, 0.2, 0.6 });
-
-			if (selected == BType::Turret && can)
-			{
-				Circle{ CellCenter(hoveredCell), turretRange }.drawFrame(2, ColorF{ 0.2,0.6,1.0,0.45 });
-			}
-		}
-
-		// エフェクト描画
-		for (auto& b : bursts)
-		{
-			const double a = Saturate(b.time / 0.35);
-			const double r = 18 + 80 * (1.0 - a);
-			Circle{ b.pos, r }.drawFrame(3, b.col.withAlpha(0.45 * a));
-			b.time -= dt;
-		}
-		bursts.remove_if([](const Burst& b) { return b.time <= 0.0; });
-		//========================
-		// 箱インベントリ UI と開封 -> トークン生成
-		//========================
-		// パネルとスロット描画
-		{
-			// インベントリパネル
-			invPanel.draw(ColorF{ 1,1,1,0.85 });
-			invPanel.drawFrame(2, ColorF{ 0.35,0.25,0.18,0.9 });
-
-			// スロットを描画
-			const int slotCount = MaxBoxes;
-			const double slotW = 24, slotH = 24, slotPad = 4;
-			const double startX = invPanel.x + 10;
-			const double startY = invPanel.y + 10;
-
-			for (int i = 0; i < slotCount; ++i)
-			{
-				const double x = startX + i * (slotW + slotPad);
-				const RectF slot{ x, startY, slotW, slotH };
-				slot.draw(ColorF{ 0.95 });
-				slot.drawFrame(1, ColorF{ 0,0,0,0.25 });
-
-				if (i < boxes.size())
-				{
-					const bool hover = slot.mouseOver();
-					const ColorF brown{ 0.50, 0.35, 0.18, hover ? 1.0 : 0.95 };
-					slot.stretched(-2).rounded(4).draw(brown);
-					slot.rounded(4).drawFrame(2, ColorF{ 0,0,0,0.35 });
-
-					// 箱をクリックで開封（ここで tokens に追加、boxes を減らす）
-					if (hover && MouseL.down())
-					{
-						const Vec2 spawn = CellCenter(hoveredCell);
-						tokens << Token{ .type = RandomTokenType(), .pos = spawn, .dragging = false, .dragOffset = Vec2{ 0,0 } };
-						boxes.erase(boxes.begin() + i);
-						// 1フレームで複数開封しないよう break
-						break;
+				if (!hit) {
+					// 盤面外チェック
+					if (!brd.gridRect.intersects(pr.pos)) {
+						// 消滅
+					}
+					else {
+						alive << pr;
 					}
 				}
 			}
-
-			// 箱を生成ボタン（最大10個）
-			if (SimpleGUI::Button(U"箱を生成", genBtnPos, 160))
-			{
-				if (static_cast<int>(boxes.size()) < MaxBoxes)
-				{
-					boxes << false; // 1つ追加
-				}
-			}
-			FontAsset(U"UI")(U"箱: {}/10"_fmt(boxes.size())).draw(20, genBtnPos.movedBy(170, 4), Palette::Black);
-			FontAsset(U"UI")(U"箱をクリックで開封 → トークン生成（ドラッグで移動）")
-				.draw(18, helpPos, ColorF{ 0,0,0,0.8 });
 		}
 
+		projectiles.swap(alive);
+	}
 
-		//========================
-		// トークンのドラッグ移動
-		//========================
-		// 先にドラッグ開始判定
-		if (MouseL.down())
-		{
-			for (int i = static_cast<int>(tokens.size()) - 1; i >= 0; --i)
-			{
-				const Vec2 p = tokens[i].pos;
-				// 当たり半径（見た目より少し大きめ）
-				if (p.distanceFrom(Cursor::PosF()) <= 18.0)
-				{
-					tokens[i].dragging = true;
-					tokens[i].dragOffset = (tokens[i].pos - Cursor::PosF());
+	// 着弾時の効果
+	void impactAt(const Projectile& pr, const Point& ic) {
+		if (!brd.inBounds(ic.x, ic.y)) return;
+
+		// AoE or 単体
+		if (pr.aoeRadius > 0) {
+			applyAOE(ic, pr.aoeRadius, (pr.owner == Team::Blue ? +pr.paint : -pr.paint), pr.damage, pr.owner);
+			SpawnParticles(brd.cellCenter(ic), (pr.owner == Team::Blue ? HSV{ 210,0.8,1.0 } : HSV{ 0,0.8,1.0 }), 18, 140, 260, 0.25, 0.6, 4, 18);
+			Circle{ brd.cellCenter(ic), 16.0 + pr.aoeRadius * brd.tileSize * 0.25 }.drawFrame(3, TeamColor(pr.owner).withAlpha(0.6));
+			AddShake(7.0, 0.12);
+			hitStopTimer = Max(hitStopTimer, 0.02);
+		}
+		else {
+			applyPaintAt(ic, (pr.owner == Team::Blue ? +pr.paint : -pr.paint));
+			damageAt(ic, pr.damage, pr.owner);
+			// ヒットスパーク
+			SpawnParticles(brd.cellCenter(ic), (pr.owner == Team::Blue ? HSV{ 210,0.8,1.0 } : HSV{ 0,0.8,1.0 }), 10, 120, 220, 0.20, 0.45, 3, 12);
+			AddShake(3.0, 0.06);
+		}
+	}
+
+	// シミュレーション更新
+	void updateSimulation(double dtReal) {
+		// ヒットストップ -> timeScale
+		if (hitStopTimer > 0.0) { hitStopTimer -= dtReal; timeScale = (hitStopTimer <= 0.0 ? 1.0 : 0.0); }
+		else { timeScale = 1.0; }
+		const double dt = dtReal * timeScale;
+
+		simElapsed += dt;
+		simTime -= dt;
+		if (simTime <= 0.0) {
+			simTime = 0.0;
+			phase = Phase::Summary;
+			stageCleared = isBlueWin() && !isBlueLose();
+			clearShakeAndHitStop();
+		}
+
+		// 発射スケジュール
+		auto stepFire = [&](Array<Structure>& a, Team atk) {
+			for (auto& s : a) {
+				if (!s.alive) continue;
+				const TypeSpec& spec = GetSpec(s.type);
+				if (spec.shots <= 0) continue;
+				while (simElapsed + 1e-6 >= s.nextFire) {
+					fireOnce(s, atk);
+					s.nextFire += s.interval;
+				}
+			}
+			};
+		stepFire(blues, Team::Blue);
+		stepFire(reds, Team::Red);
+
+		// 実弾・トレーサー・パーティクル
+		updateProjectiles(dt);
+
+		Array<Tracer> aliveT;
+		for (auto& t : tracers) {
+			t.age += dtReal;
+			if (t.age < t.life) aliveT << t;
+		}
+		tracers.swap(aliveT);
+
+		Array<Particle> aliveP;
+		for (auto& p : particles) {
+			p.age += dtReal;
+			p.pos += p.vel * dtReal;
+			p.vel *= 0.98;
+			if (p.age < p.life) aliveP << p;
+		}
+		particles.swap(aliveP);
+
+		// HQ 勝敗判定（中断）
+		if (isBlueLose()) {
+			phase = Phase::Summary;
+			stageCleared = false;
+			clearShakeAndHitStop();
+		}
+		else if (isBlueWin()) {
+			phase = Phase::Summary;
+			stageCleared = true;
+			clearShakeAndHitStop();
+		}
+	}
+
+	// サマリー->次ターン or 次ステージ（Enterでも進行）
+	void updateSummary() {
+		const double panelY = brd.gridRect.y + brd.gridRect.h * 0.60;
+		const RectF panel{ brd.gridRect.x, panelY, brd.gridRect.w, 160 };
+		panel.draw(ColorF{ 0,0,0,0.6 });
+		panel.drawFrame(2, ColorF{ 0,0,0,0.8 });
+
+		String msg;
+		if (isBlueLose())       msg = U"敗北…";
+		else if (isBlueWin())   msg = U"ステージクリア！";
+		else                    msg = U"ターン終了";
+
+		FontAsset(U"UI")(U"結果: {}"_fmt(msg)).drawAt(32, panel.center().movedBy(0, -36), ColorF{ 1 });
+		const bool enter = KeyEnter.down();
+
+		if (isBlueWin()) {
+			const bool clicked = SimpleGUI::Button(U"次のステージへ [Enter]", Vec2{ panel.center().x - 160, panel.center().y - 10 }, 220);
+			if (clicked || enter) { gotoNextStage(); return; }
+		}
+		else if (isBlueLose()) {
+			const bool clicked = SimpleGUI::Button(U"ステージ再挑戦 [Enter]", Vec2{ panel.center().x - 120, panel.center().y - 10 }, 240);
+			if (clicked || enter) { buildMapForStage(stage); return; }
+		}
+		else {
+			const bool clicked = SimpleGUI::Button(U"次ターンへ（収益計算） [Enter]", Vec2{ panel.center().x - 160, panel.center().y - 10 }, 320);
+			if (clicked || enter) { endSimulationAndScore(); return; }
+		}
+		FontAsset(U"UI")(U"Enter ですすむ / クリックでも可").drawAt(20, panel.center().movedBy(0, 36), ColorF{ 0.95 });
+	}
+
+	// 入力（プランニング）
+	void updatePlanning() {
+		// クリックで配置
+		if (MouseL.down()) {
+			if (const auto oc = brd.screenToCell(Cursor::PosF())) {
+				String reason;
+				if (canPlace(Team::Blue, selectedType, *oc, reason)) {
+					placeBlue(selectedType, *oc);
+					SpawnParticles(brd.cellCenter(*oc), HSV{ 210,0.8,1.0 }, 10, 90, 180, 0.2, 0.45, 2, 10);
+				}
+			}
+		}
+		// Enterで自動戦闘開始
+		if (KeyEnter.down()) {
+			beginSimulation();
+		}
+
+		// ステージ開始バナー進行
+		if (stageStarting) {
+			stageBannerT = Min(1.0, stageBannerT + Scene::DeltaTime() / 1.2);
+		}
+	}
+
+	// 置けるか判定
+	bool canPlace(Team side, StructureType type, const Point& c, String& reason) const {
+		if (!brd.inBounds(c.x, c.y)) { reason = U"範囲外"; return false; }
+		const Tile& t = brd.tiles[brd.idx(c.x, c.y)];
+		if (t.kind != TileKind::Floor) { reason = U"ここには置けません"; return false; }
+
+		if (side == Team::Blue) {
+			if (brd.blueIndex[brd.idx(c.x, c.y)] != -1) { reason = U"味方構造物あり"; return false; }
+			if (brd.redIndex[brd.idx(c.x, c.y)] != -1) { reason = U"敵構造物あり"; return false; }
+		}
+		else {
+			if (brd.redIndex[brd.idx(c.x, c.y)] != -1) { reason = U"自軍構造物あり"; return false; }
+			if (brd.blueIndex[brd.idx(c.x, c.y)] != -1) { reason = U"敵構造物あり"; return false; }
+		}
+
+		const bool own = (side == Team::Blue ? (t.paint > 0.55f) : (t.paint < 0.45f));
+		if (!own) { reason = U"自軍インク外"; return false; }
+
+		const int cost = GetSpec(type).cost;
+		if (side == Team::Blue) {
+			if (moneyBlue < cost) { reason = U"$不足"; return false; }
+		}
+		else {
+			if (moneyRed < cost) { reason = U"$不足(敵)"; return false; }
+		}
+
+		reason = U"OK";
+		return true;
+	}
+
+	// プレイヤー設置
+	bool placeBlue(StructureType type, const Point& c) {
+		String r; if (!canPlace(Team::Blue, type, c, r)) return false;
+		Structure s; s.owner = Team::Blue; s.type = type; s.cell = c; s.hp = GetSpec(type).maxHP; s.alive = true;
+		blues << s;
+		brd.blueIndex[brd.idx(c.x, c.y)] = (int)blues.size() - 1;
+		moneyBlue -= GetSpec(type).cost;
+		return true;
+	}
+
+	// ===================== 描画 =====================
+	void drawBoard() const {
+		for (int y = 0; y < GH; ++y) {
+			for (int x = 0; x < GW; ++x) {
+				const Tile& t = brd.tiles[brd.idx(x, y)];
+				ColorF color;
+				const double s = (t.paint - 0.5) * 2.0; // -1..1
+				if (s >= 0) color = TeamColor(Team::Blue).lerp(ColorF{ 1.0 }, 1.0 - s);
+				else        color = TeamColor(Team::Red).lerp(ColorF{ 1.0 }, 1.0 - (-s));
+
+				RectF rc = brd.cellRect(Point{ x, y });
+				rc.draw(color);
+				rc.drawFrame(1, ColorF{ 0,0,0,0.15 });
+
+				if (t.kind == TileKind::Wall) {
+					rc.stretched(-2).draw(ColorF{ 0.12, 0.12, 0.13 });
+				}
+				else if (t.kind == TileKind::HQBlue) {
+					Circle{ rc.center(), rc.w * 0.38 }.draw(HSV{ 210, 0.6, 1.0 });
+				}
+				else if (t.kind == TileKind::HQRed) {
+					Circle{ rc.center(), rc.w * 0.38 }.draw(HSV{ 0, 0.6, 1.0 });
+				}
+			}
+		}
+	}
+
+	void drawStructures() const {
+		auto drawSide = [&](const Array<Structure>& a) {
+			for (const auto& s : a) {
+				if (!s.alive) continue;
+				const RectF rc = brd.cellRect(s.cell).stretched(-4);
+				const ColorF base = (s.owner == Team::Blue ? HSV{ 210,0.9,1.0 } : HSV{ 0,0.9,1.0 });
+
+				switch (s.type) {
+				case StructureType::Basic:
+					rc.draw(base.withAlpha(0.85));
+					rc.drawFrame(2, ColorF{ 0,0,0,0.65 });
+					break;
+				case StructureType::Sprinkler:
+					Circle{ rc.center(), rc.w * 0.32 }.draw(base);
+					Circle{ rc.center(), rc.w * 0.50 }.drawFrame(2, base);
+					break;
+				case StructureType::Pump:
+					Triangle{ rc.center(), rc.w * 0.9, 0_deg }.draw(base);
+					break;
+				case StructureType::Sniper:
+					RectF{ Arg::center = rc.center(), rc.w * 0.9, rc.h * 0.55 }.draw(base);
+					break;
+				case StructureType::Mortar:
+					Circle{ rc.center(), rc.w * 0.42 }.draw(base);
+					RectF{ Arg::center = rc.center().movedBy(0, -rc.h * 0.15), rc.w * 0.28, rc.h * 0.35 }.draw(ColorF{ 0 });
+					break;
+				case StructureType::HQ:
+					Circle{ rc.center(), rc.w * 0.60 }.drawFrame(3, base);
 					break;
 				}
-			}
-		}
-		if (MouseL.pressed())
-		{
-			for (auto& t : tokens)
-			{
-				if (!t.dragging) continue;
-				Vec2 np = Cursor::PosF() + t.dragOffset;
-				// グリッド内にクランプ
-				np.x = Clamp<double>(np.x, gridArea.x + 2, gridArea.x + gridArea.w - 2);
-				np.y = Clamp<double>(np.y, gridArea.y + 2, gridArea.y + gridArea.h - 2);
-				t.pos = np;
-			}
-		}
-		if (MouseL.up())
-		{
-			for (auto& t : tokens)
-			{
-				if (t.dragging)
-				{
-					t.dragging = false;
-					// セル中心にスナップ
-					t.pos = CellCenter(PosToCell(t.pos));
+
+				// HPバー
+				const double maxHP = GetSpec(s.type).maxHP;
+				if (maxHP > 0.0 && s.type != StructureType::HQ) {
+					const double ratio = (s.hp / maxHP);
+					const double rr = (ratio < 0.0 ? 0.0 : (ratio > 1.0 ? 1.0 : ratio));
+					const RectF hb{ rc.x, rc.y - 6, rc.w, 4 };
+					hb.draw(ColorF{ 0,0,0,0.5 });
+					RectF{ hb.pos, hb.w * rr, hb.h }.draw((s.owner == Team::Blue) ? ColorF{ 0.2,0.9,0.3 } : ColorF{ 0.9,0.2,0.2 });
 				}
 			}
+			};
+		drawSide(blues);
+		drawSide(reds);
+	}
+
+	void drawTracers() const {
+		for (const auto& t : tracers) {
+			const double a = 1.0 - (t.age / t.life);
+			Line{ t.p0, t.p1 }.draw(4, t.col.withAlpha(0.35 * a));
+			Line{ t.p0, t.p1 }.draw(2, ColorF{ 1.0, a * 0.8 });
 		}
+	}
 
-		//========================
-		// トークンの「重ね」検出と特性発動
-		//========================
-		const double stackRadius = 14.0; // 同種でこの距離以内を「重ね」とみなす
-		Array<int> toRemove; toRemove.reserve(tokens.size());
-		// 種別ごとに判定
-		for (TokenType ty : { TokenType::GreenTriangle, TokenType::YellowCircle, TokenType::PurpleSquare })
-		{
-			for (int i = 0; i < tokens.size(); ++i)
-			{
-				if (tokens[i].type != ty) continue;
-				// 既に消去予定ならスキップ
-				if (toRemove.includes(i)) continue;
+	void drawParticles() const {
+		for (const auto& p : particles) {
+			const double t = p.age / p.life;
+			const double r = p.size0 + (p.size1 - p.size0) * t;
+			const double a = 1.0 - t;
+			Circle{ p.pos, r }.draw(p.col.withAlpha(0.6 * a));
+		}
+	}
 
-				// i を中心にグループ化
-				Array<int> group{ i };
-				for (int j = 0; j < tokens.size(); ++j)
-				{
-					if (i == j) continue;
-					if (tokens[j].type != ty) continue;
-					if (toRemove.includes(j)) continue;
-					if (tokens[i].pos.distanceFrom(tokens[j].pos) <= stackRadius)
-					{
-						group << j;
-					}
-				}
-
-				if (group.size() >= 3)
-				{
-					// 中心座標（平均）で特性発動
-					Vec2 center{ 0,0 };
-					for (int gi : group) center += tokens[gi].pos;
-					center /= static_cast<double>(group.size());
-
-					ActivateTrait(ty, center);
-
-					// グループのトークンを消費マーク
-					for (int gi : group) toRemove << gi;
-				}
+	void drawProjectiles() const {
+		for (const auto& pr : projectiles) {
+			ColorF c = TeamColor(pr.owner);
+			if (pr.kind == ProjKind::Sniper) {
+				// スナイパーは光る弾
+				Circle{ pr.pos, pr.radius * 0.8 }.draw(ColorF{ 1.0, 0.95 });
+				Circle{ pr.pos, pr.radius * 1.6 }.drawFrame(2, c.withAlpha(0.8));
+			}
+			else if (pr.kind == ProjKind::Mortar) {
+				// 迫撃砲はコア＋外縁
+				Circle{ pr.pos, pr.radius }.draw(c.withAlpha(0.9));
+				Circle{ pr.pos, pr.radius * 1.6 }.drawFrame(2, ColorF{ 0,0,0,0.35 });
+			}
+			else {
+				Circle{ pr.pos, pr.radius }.draw(c);
 			}
 		}
-		if (!toRemove.isEmpty())
-		{
-			toRemove.sort_by([](int a, int b) { return a > b; });
-			for (int idx : toRemove)
-			{
-				if (0 <= idx && idx < tokens.size()) tokens.erase(tokens.begin() + idx);
+	}
+
+	// UI（選択ボタンで selectedType を変更するため非const）
+	void drawUI() {
+		const RectF ui{ Scene::Width() - UIWidth + Margin * 0.5, Margin, UIWidth - Margin * 1.5, Scene::Height() - 2 * Margin };
+		ui.draw(ColorF{ 0,0,0,0.25 });
+		ui.drawFrame(2, ColorF{ 0,0,0,0.4 });
+
+		const String ph =
+			(phase == Phase::Planning) ? U"フェーズ: 設置" :
+			(phase == Phase::Simulating) ? U"フェーズ: 自動戦闘" : U"フェーズ: 結果";
+		FontAsset(U"UI")(U"インクウォーズ（仮）").draw(24, Vec2{ ui.x + 14, ui.y + 10 }, ColorF{ 1 });
+		FontAsset(U"UI")(U"ステージ {}"_fmt(stage)).draw(20, Vec2{ ui.x + 14, ui.y + 42 }, ColorF{ 1 });
+		FontAsset(U"UI")(ph).draw(18, Vec2{ ui.x + 14, ui.y + 68 }, ColorF{ 1 });
+
+		FontAsset(U"UI")(U"Blue $: {}"_fmt(moneyBlue)).draw(20, Vec2{ ui.x + 14, ui.y + 92 }, ColorF{ 1 });
+
+		auto [bp, rp] = Ownership(brd);
+		RectF rbb{ ui.x + 14, ui.y + 120, ui.w - 28, 14 };
+		rbb.draw(ColorF{ 0,0,0,0.3 });
+		RectF{ rbb.pos, rbb.w * (bp < 0.0 ? 0.0 : (bp > 1.0 ? 1.0 : bp)), rbb.h }.draw(HSV{ 210,0.8,1.0 });
+		RectF{ rbb.pos.movedBy(0, 18), rbb.w * (rp < 0.0 ? 0.0 : (rp > 1.0 ? 1.0 : rp)), rbb.h }.draw(HSV{ 0,0.8,1.0 });
+		FontAsset(U"UI")(U"BLUE 支配: {:.0f}%  /  RED 支配: {:.0f}%"_fmt(bp * 100.0, rp * 100.0)).draw(18, Vec2{ ui.x + 14, ui.y + 152 }, ColorF{ 0.95 });
+
+		const auto drawButton = [&](const String& label, StructureType t, double y, int cost) {
+			RectF b{ ui.x + 14, y, ui.w - 28, 36 };
+			const bool sel = (selectedType == t);
+			b.draw(sel ? ColorF{ 0.2,0.35,0.6, 0.7 } : ColorF{ 0,0,0,0.25 });
+			b.drawFrame(1, ColorF{ 0,0,0,0.5 });
+			FontAsset(U"UI")(U"{}  ${}"_fmt(label, cost)).draw(20, b.pos.movedBy(8, 8), ColorF{ 1 });
+			if (phase == Phase::Planning && b.leftClicked()) selectedType = t;
+			};
+
+		double y = ui.y + 186;
+		drawButton(U"基本タレット", StructureType::Basic, y += 42, CostBasic);
+		drawButton(U"スプリンクラー", StructureType::Sprinkler, y += 42, CostSprinkler);
+		drawButton(U"インクポンプ", StructureType::Pump, y += 42, CostPump);
+		drawButton(U"スナイパー", StructureType::Sniper, y += 42, CostSniper);
+		drawButton(U"迫撃砲", StructureType::Mortar, y += 42, CostMortar);
+
+		y += 60;
+		if (phase == Phase::Planning) {
+			FontAsset(U"UI")(U"[Click] 配置 / [Enter] 自動戦闘 10s").draw(18, Vec2{ ui.x + 14, y }, ColorF{ 0.95 });
+		}
+		else if (phase == Phase::Simulating) {
+			FontAsset(U"UI")(U"自動戦闘中… 残り {:.1f}s"_fmt(simTime)).draw(18, Vec2{ ui.x + 14, y }, ColorF{ 0.95 });
+		}
+		else {
+			FontAsset(U"UI")(U"[Enter] でも次へ進めます").draw(18, Vec2{ ui.x + 14, y }, ColorF{ 0.95 });
+		}
+
+		y += 28;
+		FontAsset(U"UI")(U"ターン {}"_fmt(turnCount)).draw(20, Vec2{ ui.x + 14, y }, ColorF{ 1 });
+	}
+
+	void drawHoverHelp() const {
+		if (phase != Phase::Planning) return;
+		if (const auto oc = brd.screenToCell(Cursor::PosF())) {
+			const Point c = *oc;
+			const RectF rc = brd.cellRect(c).stretched(-2);
+			String reason;
+			const bool ok = canPlace(Team::Blue, selectedType, c, reason);
+			rc.drawFrame(3, ok ? ColorF{ 0.2,0.9,0.4,0.9 } : ColorF{ 0.9,0.2,0.2, 0.9 });
+
+			const TypeSpec& sp = GetSpec(selectedType);
+			if (sp.range > 0) {
+				const double r = sp.range * brd.tileSize;
+				Circle{ brd.cellCenter(c), r }.drawFrame(2, ColorF{ 1,1,1,0.25 });
 			}
 		}
+	}
 
+	void drawStageBanner() const {
+		if (!stageStarting && phase != Phase::Summary) return;
+		double t = stageStarting ? stageBannerT : 1.0;
+		const double alpha = easeInOutSine(Min(1.0, t));
+		const String text = (phase == Phase::Summary && stageCleared) ? U"STAGE CLEAR!" : U"STAGE " + Format(stage);
+		const Vec2 c = brd.gridRect.center();
+		const double w = brd.gridRect.w * 0.7;
+		const double h = 64;
+		const double yOff = (1.0 - easeOutBack(alpha)) * -80.0;
+		const RectF banner{ c.x - w / 2, c.y - h / 2 + yOff, w, h };
+		banner.draw(ColorF{ 0,0,0, 0.55 * alpha });
+		banner.drawFrame(2, ColorF{ 1,1,1, 0.8 * alpha });
+		FontAsset(U"UI")(text).drawAt(32, banner.center(), ColorF{ 1,1,1, alpha });
+	}
+};
 
-		// UI
-		const String selName =
-			(selected == BType::Turret ? U"タレット(1)" :
-			 selected == BType::Facility ? U"施設(2)" :
-			 selected == BType::Wall ? U"壁(3)" :
-			 selected == BType::Fortress ? U"要塞(4)" : U"");
+// ===================== メイン =====================
+void Main() {
+	Window::Resize(1600, 900);
+	Scene::SetBackground(ColorF{ 0.06, 0.06, 0.07 });
+	FontAsset::Register(U"UI", FontMethod::MSDF, 20, Typeface::Bold);
+	const ScopedRenderStates2D _sampler{ SamplerState::ClampLinear };
 
-		const int selCost =
-			(selected == BType::Turret ? turretCost :
-			 selected == BType::Facility ? facilityCost :
-			 selected == BType::Wall ? wallCost :
-			 selected == BType::Fortress ? fortressCost : 0);
+	Game G;
+	G.layout();
+	G.buildMapForStage(1);
 
-		// プレイヤー情報
-		{
-			const RectF pbox{ 10, 8, 320, 68 };
-			pbox.draw(ColorF{ 1,1,1,0.85 });
-			pbox.drawFrame(2, TeamColor(Team::Blue));
-			FontAsset(U"UI")(U"Blue 資金: {:.1f}"_fmt(moneyBlue)).draw(24, Vec2{ 20, 12 }, Palette::Black);
-			FontAsset(U"UI")(U"選択: {} / コスト: {}"_fmt(selName, selCost)).draw(20, Vec2{ 20, 42 }, Palette::Black);
+	while (System::Update()) {
+		const double dtReal = Scene::DeltaTime();
+
+		// レイアウトはリサイズに追従
+		G.layout();
+
+		// 毎フレーム、演出の減衰を回す（どのフェーズでも）
+		G.updateEffectsEveryFrame(dtReal);
+
+		// 入力・更新
+		if (G.phase == Phase::Planning) {
+			G.updatePlanning();
 		}
-		// 敵情報
-		{
-			const RectF ebox{ Scene::Width() - 330, 8, 320, 68 };
-			ebox.draw(ColorF{ 1,1,1,0.85 });
-			ebox.drawFrame(2, TeamColor(Team::Red));
-			FontAsset(U"UI")(U"Red 資金: {:.1f}"_fmt(moneyRed)).draw(24, Vec2{ Scene::Width() - 320, 12 }, Palette::Black);
-			FontAsset(U"UI")(U"AI: 建設中...").draw(20, Vec2{ Scene::Width() - 320, 42 }, Palette::Black);
-		}
-
-		// 勝敗オーバーレイ
-		if (gameState != GameState::Playing)
-		{
-			RectF{ 0,0, Scene::Width(), Scene::Height() }.draw(ColorF{ 0,0,0,0.55 });
-			String text = (gameState == GameState::BlueWin) ? U"CLEAR!" : U"GAME OVER";
-			const ColorF col = (gameState == GameState::BlueWin) ? ColorF{ 0.2,1.0,0.4 } : ColorF{ 1.0,0.3,0.3 };
-			FontAsset(U"UI")(text).drawAt(72, Scene::Center().movedBy(0, -20), col);
-			FontAsset(U"UI")(U"[R] でリスタート").drawAt(28, Scene::Center().movedBy(0, 40), Palette::White);
-
-			if (KeyR.down())
-			{
-				// いったんアプリ再起動相当の簡易リセット（プロジェクトに合わせて正式リセット処理に置き換え可能）
-				System::Exit(); // エディタから再実行 or アプリを再起動してください
+		else if (G.phase == Phase::Simulating) {
+			G.updateSimulation(dtReal);
+			// 自動フェーズのスキップ（サマリー突入時に演出停止）
+			if (SimpleGUI::Button(U"スキップ", Vec2{ Scene::Width() - UIWidth + 24, Scene::Height() - 48 }, 120)) {
+				G.phase = Phase::Summary;
+				G.stageCleared = G.isBlueWin() && !G.isBlueLose();
+				G.clearShakeAndHitStop();
 			}
+		}
+		else {
+			G.updateSummary();
+		}
+
+		// 盤面のみシェイクを適用（UIは適用しない）
+		{
+			const Transformer2D _tr(Mat3x2::Translate(G.GetShakeOffset()), TransformCursor::No);
+			G.drawBoard();
+			G.drawStructures();
+			G.drawTracers();
+			G.drawParticles();
+			G.drawProjectiles();
+		}
+		// UI・ヘルプ・バナーはシェイクなしで描画（クリック判定のズレ防止）
+		G.drawUI();
+		G.drawHoverHelp();
+		G.drawStageBanner();
+
+		// 参考表示
+		auto [bp, rp] = Ownership(G.brd);
+		const bool blueLose = G.isBlueLose();
+		const bool blueWin = G.isBlueWin();
+		if (blueLose || blueWin) {
+			const String msg = blueLose ? U"敗北条件達成" : U"勝利条件達成";
+			FontAsset(U"UI")(msg).drawAt(28, Vec2{ Scene::Width() * 0.5, 26 }, ColorF{ 1, 1, 0.8 });
 		}
 	}
 }
