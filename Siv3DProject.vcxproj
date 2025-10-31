@@ -12,14 +12,14 @@
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>15.0</VCProjectVersion>
-    <ProjectGuid>{9f566331-ea26-4707-86b5-b7b672365a9f}</ProjectGuid>
+    <ProjectGuid>{E375859C-EE20-4784-BE22-DB6E2B92E764}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>Siv3DProject</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <PropertyGroup Label="Vcpkg">
-  <VcpkgEnabled>false</VcpkgEnabled>
-</PropertyGroup>
+    <VcpkgEnabled>false</VcpkgEnabled>
+  </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
