@@ -13,15 +13,48 @@ void Game::layout() {
 	brd.gridRect = RectF{ Margin, Margin, gridW, gridH };
 }
 
+char MapTip_Stage1[GH][GW] = {
+	"...................................",
+	"......0............................",
+	"......0............................",
+	"......0............................",
+	"......0............................",
+	"......0............................",
+	"...................................",
+	"...........0.......................",
+	"...........0.......................",
+	"..P........0.....................E.",
+	"...........0.......................",
+	"...........0.......................",
+	"...................................",
+	"...................................",
+	"......0............................",
+	"......0............................",
+	"......0............................",
+	"......0............................",
+	"......0............................",
+	"...................................",
+};
+
+
+
+
 void Game::buildMapForStage(int stageNo) {
 	brd.init();
+
+	Point bHQ{ -1, -1 };
+	Point rHQ{ -1, -1 };
 
 	for (int y = 0; y < GH; ++y) {
 		for (int x = 0; x < GW; ++x) {
 			Tile& t = brd.tiles[brd.idx(x, y)];
 			bool makeWall = false;
-			if ((x % 11 == 0) && (y % 5 != 0) && (x > 6 && x < GW - 6)) makeWall = true;
-			if (stageNo >= 2 && (x % 13 == 6) && (y % 7 == 3)) makeWall = true;
+
+
+			if (MapTip_Stage1[y][x] == '0') makeWall = true;
+			if (MapTip_Stage1[y][x] == 'P') bHQ = { x, y }; //自軍HQ設置
+			if (MapTip_Stage1[y][x] == 'E') rHQ = { x, y }; //敵軍HQ設置
+		
 			if (makeWall) {
 				t.kind = TileKind::Wall;
 				t.paint = 0.5f;
@@ -34,9 +67,7 @@ void Game::buildMapForStage(int stageNo) {
 		}
 	}
 
-	// HQ 設置
-	Point bHQ{ 3, GH / 2 };
-	Point rHQ{ GW - 4, GH / 2 };
+	// HQ 設置処理
 	brd.tiles[brd.idx(bHQ.x, bHQ.y)].kind = TileKind::HQBlue;
 	brd.tiles[brd.idx(rHQ.x, rHQ.y)].kind = TileKind::HQRed;
 	brd.tiles[brd.idx(bHQ.x, bHQ.y)].paint = 1.0f;
@@ -157,7 +188,7 @@ void Game::enemyPlaceAI() {
 		if (moneyRed >= CostMortar)    bag << StructureType::Mortar;
 		if (stage >= 2 && moneyRed >= CostSniper && RandomBool(0.35)) bag << StructureType::Sniper;
 		if (moneyRed >= CostPump && RandomBool(0.25)) bag << StructureType::Pump;
-		if (moneyRed >= CostSpawner && RandomBool(0.30)) bag << StructureType::spawner;
+		if (moneyRed >= CostSpawner && RandomBool(0.20)) bag << StructureType::spawner;
 
 		if (bag.isEmpty()) break;
 
