@@ -27,17 +27,17 @@ enum class StructureType : int32 {
 struct TypeSpec {
 	int   cost = 0;
 	double maxHP = 0;
-	int   range = 0;           // タイル距離
-	int   shots = 0;           // 自動フェーズ10秒での発射回数
-	double damage = 0;         // 構造物へのダメージ
-	double paint = 0;          // タイル塗り変化量（Blue:+ / Red:-）
-	int   aoeRadius = 0;       // AoE半径（タイル） 0=単体
-	bool  blockedByWalls = true; // 壁で遮蔽されるか
+	int   range = 0;				// タイル距離
+	int   shots = 0;				// 自動フェーズ10秒での発射回数
+	double damage = 0;				// 構造物へのダメージ
+	double paint = 0;				// タイル塗り変化量（Blue:+ / Red:-）
+	int   aoeRadius = 0;			// AoE半径（タイル） 0=単体
+	bool  blockedByWalls = true;	// 壁で遮蔽されるか
 	bool  targetTurretOnly = false; // タレット（またはHQ）狙い
-	bool  indirect = false;    // 壁を無視（迫撃砲）
-	double spread = 0;         // 着弾ブレ（タイル）
-	double projSpeed = 800.0;  // 弾速度（px/s）
-	double projRadius = 5.0;   // 見た目用の弾半径（px）
+	bool  indirect = false;			// 壁を無視（迫撃砲）
+	double spread = 0;				// 着弾ブレ（タイル）
+	double projSpeed = 800.0;		// 弾速度（px/s）
+	double projRadius = 5.0;		// 見た目用の弾半径（px）
 };
 
 inline const TypeSpec& GetSpec(StructureType t) {
