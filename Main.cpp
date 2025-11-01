@@ -27,7 +27,8 @@ enum class StructureType : int32 {
 	Pump = 2,         // インクポンプ：収益 +α
 	Sniper = 3,       // スナイパー：極長射程・貫通不可、敵タレット狙撃
 	Mortar = 4,       // 迫撃砲：高射程・壁越え爆撃（放物線・範囲）
-	HQ = 5            // 本拠地（内部用）
+	HQ = 5,            // 本拠地（内部用）
+	spawner = 6,    // 敵、プレイヤースポーン地点（内部用）
 };
 
 // ===================== マップ設定 =====================
@@ -57,6 +58,10 @@ static constexpr double HPPump = 120.0;
 static constexpr double HPSniper = 80.0;
 static constexpr double HPMortar = 100.0;
 static constexpr double HPHQ = 600.0;
+//プレイヤーHP
+static constexpr int HPPlayer = 200;
+//敵のHP
+static constexpr int HPEnemy = 200;
 
 // タレット仕様（射程：タイル、発射回数、弾仕様）
 struct TypeSpec {
@@ -99,6 +104,9 @@ inline const TypeSpec& GetSpec(StructureType t) {
 	static TypeSpec sHQ{
 		0, HPHQ, 0, 0, 0, 0, 0, false, false, false, 0.0, 0.0, 0.0
 	};
+	static TypeSpec sSpawner{
+		0, 1.0, 0, 0, 0, 0, 0, false, false, false, 0.0, 0.0, 0.0
+	};
 
 	switch (t) {
 	case StructureType::Basic:      return sBasic;
@@ -107,6 +115,7 @@ inline const TypeSpec& GetSpec(StructureType t) {
 	case StructureType::Sniper:     return sSniper;
 	case StructureType::Mortar:     return sMortar;
 	case StructureType::HQ:         return sHQ;
+	case StructureType::spawner:    return sSpawner;
 	default:                        return sBasic;
 	}
 }
