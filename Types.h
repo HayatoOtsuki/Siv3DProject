@@ -13,6 +13,9 @@ inline s3d::ColorF TeamColor(Team t) {
 enum class Phase : int32 { Planning, Simulating, Summary };
 enum class TileKind : int32 { Floor = 0, Wall = 1, HQBlue = 2, HQRed = 3 };
 
+
+
+// kometo
 enum class StructureType : int32 {
 	Basic = 0,
 	Sprinkler = 1,
