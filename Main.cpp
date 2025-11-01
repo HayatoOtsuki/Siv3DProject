@@ -27,8 +27,8 @@ enum class StructureType : int32 {
 	Pump = 2,         // インクポンプ：収益 +α
 	Sniper = 3,       // スナイパー：極長射程・貫通不可、敵タレット狙撃
 	Mortar = 4,       // 迫撃砲：高射程・壁越え爆撃（放物線・範囲）
-	HQ = 5,            // 本拠地（内部用）
-	spawner = 6,    // 敵、プレイヤースポーン地点（内部用）
+	HQ = 5,           // 本拠地（内部用）
+	spawner = 6,      // スポナー（クリックでプレイヤー出撃 / 敵はAIで出撃）
 };
 
 // ===================== マップ設定 =====================
@@ -48,6 +48,8 @@ static constexpr int CostSprinkler = 35;
 static constexpr int CostPump = 60;
 static constexpr int CostSniper = 90;
 static constexpr int CostMortar = 80;
+// スポナーのコスト
+static constexpr int CostSpawner = 100;
 static constexpr int IncomePerTile = 1;
 static constexpr int IncomePerPump = 20;
 
@@ -58,10 +60,35 @@ static constexpr double HPPump = 120.0;
 static constexpr double HPSniper = 80.0;
 static constexpr double HPMortar = 100.0;
 static constexpr double HPHQ = 600.0;
-//プレイヤーHP
+static constexpr double HPSpawner = 140.0;
+
+// プレイヤー（出撃ユニット：クリックでスポナーから出現）
 static constexpr int HPPlayer = 200;
-//敵のHP
+static constexpr double PlayerSpeed = 220.0;
+static constexpr double PlayerRadius = 10.0;
+static constexpr double PlayerPaintPerSecond = 0.35; // 移動で塗る量（毎秒）
+// 体当たり爆発（プレイヤー）
+static constexpr int PlayerExplodeRadius = 2;           // 爆発半径（タイル）
+static constexpr double PlayerExplodeDamage = 50.0;    // 爆発ダメージ
+static constexpr double PlayerExplodePaint = 0.60;      // 爆発で塗る量（中心最大）
+static constexpr double PlayerExplodeShakePow = 16.0;   // 画面揺れ（大きめ）
+static constexpr double PlayerExplodeShakeDur = 0.22;   // 揺れ時間
+static constexpr double PlayerExplodeHitstop = 0.06;    // ヒットストップ
+
+// 敵ユニット（AI出撃・体当たり）
 static constexpr int HPEnemy = 200;
+static constexpr double EnemySpeed = 180.0;
+static constexpr double EnemyRadius = 10.0;
+// 体当たり爆発（敵）
+static constexpr int EnemyExplodeRadius = 2;
+static constexpr double EnemyExplodeDamage = 50.0;
+static constexpr double EnemyExplodePaint = 0.55;
+static constexpr double EnemyExplodeShakePow = 12.0;
+static constexpr double EnemyExplodeShakeDur = 0.18;
+static constexpr double EnemyExplodeHitstop = 0.04;
+
+// 敵スポナーの出撃間隔（シミュレーション中）
+static constexpr double EnemySpawnerInterval = 4.0;
 
 // タレット仕様（射程：タイル、発射回数、弾仕様）
 struct TypeSpec {
@@ -105,7 +132,8 @@ inline const TypeSpec& GetSpec(StructureType t) {
 		0, HPHQ, 0, 0, 0, 0, 0, false, false, false, 0.0, 0.0, 0.0
 	};
 	static TypeSpec sSpawner{
-		0, 1.0, 0, 0, 0, 0, 0, false, false, false, 0.0, 0.0, 0.0
+		CostSpawner, HPSpawner,
+		0, 0, 0, 0, 0, false, false, false, 0.0, 0.0, 0.0
 	};
 
 	switch (t) {
@@ -173,6 +201,16 @@ struct Projectile {
 	double u = 0.0;        // 経路の進捗0..1
 	double pathLen = 1.0;  // 経路長（px）
 	double pathSpeed = 600.0; // 経路に沿って進む速度（px/s）
+};
+
+// 歩行ユニット（プレイヤー / 敵）
+struct Actor {
+	Vec2 pos{ 0,0 };
+	Vec2 lastPos{ 0,0 };
+	double radius = 10.0;
+	double speed = 200.0;
+	double hp = 100.0;
+	bool alive = false;
 };
 
 // ===================== マップと描画座標 =====================
@@ -293,6 +331,12 @@ struct Game {
 	double simTime = 0.0;
 	double simElapsed = 0.0;
 
+	// プレイヤー
+	Optional<Actor> player;
+
+	// 敵ユニット（AI）
+	Array<Actor> redAgents;
+
 	// 視覚演出
 	Array<Tracer> tracers;
 	Array<Particle> particles;
@@ -346,6 +390,8 @@ struct Game {
 
 		blues.clear(); reds.clear();
 		tracers.clear(); particles.clear(); projectiles.clear();
+		redAgents.clear();
+		player.reset();
 		stageCleared = false;
 		turnCount = 1;
 		phase = Phase::Planning;
@@ -423,7 +469,7 @@ struct Game {
 			const double sp = Random(vmin, vmax);
 			Particle fx;
 			fx.pos = p;
-			fx.vel = Vec2{ Cos(a), Sin(a) } * sp;
+			fx.vel = Vec2{ Cos(a), Sin(a) } *sp;
 			fx.col = col;
 			fx.age = 0.0; fx.life = Random(lifeMin, lifeMax);
 			fx.size0 = Random(s0 * 0.8, s0 * 1.2);
@@ -444,10 +490,10 @@ struct Game {
 		return (rp >= 0.98) || blueHQDead;
 	}
 
-	// 敵AIの簡易設置
+	// 敵AIの簡易設置（スポナーも含める）
 	void enemyPlaceAI() {
 		int tries = 18;
-		const int minCost = Min(CostBasic, Min(CostSprinkler, CostMortar));
+		const int minCost = Min({ CostBasic, CostSprinkler, CostMortar, CostSpawner });
 		while (tries-- > 0) {
 			if (moneyRed < minCost) break;
 
@@ -457,6 +503,9 @@ struct Game {
 			if (moneyRed >= CostMortar)    bag << StructureType::Mortar;
 			if (stage >= 2 && moneyRed >= CostSniper && RandomBool(0.35)) bag << StructureType::Sniper;
 			if (moneyRed >= CostPump && RandomBool(0.25)) bag << StructureType::Pump;
+			// スポナーは時々置く
+			if (moneyRed >= CostSpawner && RandomBool(0.30)) bag << StructureType::spawner;
+
 			if (bag.isEmpty()) break;
 
 			const StructureType pick = bag.choice();
@@ -475,6 +524,11 @@ struct Game {
 				reds << s;
 				brd.redIndex[brd.idx(x, y)] = (int)reds.size() - 1;
 				moneyRed -= GetSpec(pick).cost;
+
+				// スポナーを置いたら即座に1体出撃
+				if (pick == StructureType::spawner) {
+					spawnEnemyAt({ x, y });
+				}
 				break;
 			}
 		}
@@ -504,6 +558,14 @@ struct Game {
 			};
 		setup(blues);
 		setup(reds);
+
+		// 敵スポナーは独自の出撃タイマーを使う
+		for (auto& s : reds) {
+			if (s.alive && s.type == StructureType::spawner) {
+				s.interval = EnemySpawnerInterval;
+				s.nextFire = 0.0; // simElapsed と比較して出撃
+			}
+		}
 
 		stageStarting = false;
 	}
@@ -656,7 +718,6 @@ struct Game {
 			pr.useArc = true;
 			pr.startPos = muzzle;
 			pr.endPos = hitPos;
-			// 見た目用の山（上に持ち上げる）
 			const Vec2 mid = (muzzle + hitPos) * 0.5;
 			const double dist = (hitPos - muzzle).length();
 			const double h = 60.0 + 0.25 * dist; // 距離に応じて高く
@@ -691,7 +752,6 @@ struct Game {
 		if (s.type == StructureType::Sprinkler) {
 			// 自身の周囲に小弾を複数散布
 			for (int i = 0; i < 3; ++i) {
-				// 周囲のランダムなセル
 				Point tc = s.cell + Point{ Random(-spec.range, spec.range), Random(-spec.range, spec.range) };
 				tc.x = limit(tc.x, 0, GW - 1);
 				tc.y = limit(tc.y, 0, GH - 1);
@@ -835,6 +895,222 @@ struct Game {
 		}
 	}
 
+	// ===================== プレイヤー操作・敵AI（体当たり） =====================
+
+	// 主に盤面外や壁への侵入を防ぐ
+	bool isWallAt(const Vec2& p) const {
+		if (const auto oc = brd.posToCell(p)) {
+			return (brd.tiles[brd.idx(oc->x, oc->y)].kind == TileKind::Wall);
+		}
+		return true; // 盤面外は壁扱い
+	}
+
+	void moveWithCollide(Actor& a, const Vec2& delta) {
+		if (!a.alive) return;
+
+		// X方向
+		Vec2 np = a.pos + Vec2{ delta.x, 0 };
+		const double minX = brd.gridRect.x + a.radius;
+		const double maxX = brd.gridRect.x + brd.gridRect.w - a.radius;
+		np.x = Clamp(np.x, minX, maxX);
+		if (!isWallAt(np)) a.pos.x = np.x;
+
+		// Y方向
+		np = a.pos + Vec2{ 0, delta.y };
+		const double minY = brd.gridRect.y + a.radius;
+		const double maxY = brd.gridRect.y + brd.gridRect.h - a.radius;
+		np.y = Clamp(np.y, minY, maxY);
+		if (!isWallAt(np)) a.pos.y = np.y;
+	}
+
+	// スポナーをクリックで出撃（プラン/シミュどちらでも可）
+	bool trySpawnFromClickedSpawner() {
+		if (!MouseL.down()) return false;
+		if (const auto oc = brd.screenToCell(Cursor::PosF())) {
+			const int bi = brd.blueIndex[brd.idx(oc->x, oc->y)];
+			if (bi >= 0) {
+				const Structure& s = blues[bi];
+				if (s.alive && s.type == StructureType::spawner) {
+					spawnPlayerAt(s.cell);
+					SpawnParticles(brd.cellCenter(s.cell), HSV{ 210,0.8,1.0 }, 14, 120, 240, 0.18, 0.35, 3, 12);
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	void spawnPlayerAt(const Point& c) {
+		Actor a;
+		a.pos = brd.cellCenter(c);
+		a.lastPos = a.pos;
+		a.radius = PlayerRadius;
+		a.speed = PlayerSpeed;
+		a.hp = HPPlayer;
+		a.alive = true;
+		player = a;
+	}
+
+	// プレイヤー爆発（AoE+強いカメラシェイク）
+	void playerExplodeAt(const Point& cell) {
+		const Vec2 center = brd.cellCenter(cell);
+
+		// 被害（塗り+ダメージ）
+		applyAOE(cell, PlayerExplodeRadius, +PlayerExplodePaint, PlayerExplodeDamage, Team::Blue);
+
+		// 視覚効果（強め）
+		SpawnParticles(center, HSV{ 210,0.85,1.0 }, 36, 180, 360, 0.30, 0.70, 5, 22);
+		SpawnParticles(center, ColorF{ 1.0, 0.95 }, 18, 120, 260, 0.12, 0.25, 4, 14);
+
+		AddShake(PlayerExplodeShakePow, PlayerExplodeShakeDur);
+		hitStopTimer = Max(hitStopTimer, PlayerExplodeHitstop);
+
+		// 自爆扱い
+		if (player) {
+			player->alive = false;
+		}
+	}
+
+	// 移動経路のセルを塗る（1フレーム分の合計塗り量を経路に等分配）
+	void paintTrailByMove(const Vec2& from, const Vec2& to, double dt) {
+		const auto c0 = brd.posToCell(from);
+		const auto c1 = brd.posToCell(to);
+		if (!c0 || !c1) return;
+
+		Array<Point> path = LineCells(*c0, *c1);
+		if (path.isEmpty()) return;
+
+		const double total = PlayerPaintPerSecond * dt;
+		const double per = total / (double)path.size();
+
+		for (const auto& cell : path) {
+			// 壁は塗らない
+			if (brd.inBounds(cell.x, cell.y) && brd.tiles[brd.idx(cell.x, cell.y)].kind != TileKind::Wall) {
+				applyPaintAt(cell, +per);
+			}
+		}
+	}
+
+	// 毎フレームのプレイヤー更新（WASD移動・塗り・体当たり爆発）
+	void updatePlayer(double dt) {
+		// クリックでスポナーから出撃（先に処理）
+		trySpawnFromClickedSpawner();
+
+		if (!player || !player->alive) return;
+
+		Vec2 dir{ 0,0 };
+		if (KeyW.pressed()) dir.y -= 1;
+		if (KeyS.pressed()) dir.y += 1;
+		if (KeyA.pressed()) dir.x -= 1;
+		if (KeyD.pressed()) dir.x += 1;
+
+		Vec2 prev = player->pos;
+
+		if (dir.lengthSq() > 0.0) {
+			dir = dir.setLength(player->speed * dt);
+			moveWithCollide(*player, dir);
+		}
+
+		// 移動経路を塗る
+		paintTrailByMove(prev, player->pos, dt);
+
+		// 敵構造物に接触したら爆発
+		if (const auto oc = brd.posToCell(player->pos)) {
+			const int idxR = brd.redIndex[brd.idx(oc->x, oc->y)];
+			if (idxR >= 0) {
+				playerExplodeAt(*oc);
+				return; // このフレームの処理はここまで
+			}
+		}
+
+		// 位置更新
+		player->lastPos = player->pos;
+	}
+
+	// ===== 敵ユニット（AI） =====
+
+	// 敵ユニット生成
+	void spawnEnemyAt(const Point& c) {
+		Actor a;
+		a.pos = brd.cellCenter(c);
+		a.lastPos = a.pos;
+		a.radius = EnemyRadius;
+		a.speed = EnemySpeed;
+		a.hp = HPEnemy;
+		a.alive = true;
+		redAgents << a;
+		SpawnParticles(a.pos, HSV{ 0,0.8,1.0 }, 10, 100, 200, 0.15, 0.30, 3, 12);
+	}
+
+	// 敵爆発
+	void enemyExplodeAt(const Point& cell) {
+		const Vec2 center = brd.cellCenter(cell);
+		applyAOE(cell, EnemyExplodeRadius, -EnemyExplodePaint, EnemyExplodeDamage, Team::Red);
+		SpawnParticles(center, HSV{ 0,0.85,1.0 }, 28, 160, 320, 0.25, 0.60, 5, 20);
+		AddShake(EnemyExplodeShakePow, EnemyExplodeShakeDur);
+		hitStopTimer = Max(hitStopTimer, EnemyExplodeHitstop);
+	}
+
+	// 敵の目標（最も近い味方構造物中心）
+	Vec2 enemySeekTargetVec(const Actor& e) const {
+		double bestD2 = 1e18;
+		Vec2 best{ 0,0 };
+		for (const auto& s : blues) {
+			if (!s.alive) continue;
+			Vec2 p = brd.cellCenter(s.cell);
+			double d2 = (p - e.pos).lengthSq();
+			if (d2 < bestD2) { bestD2 = d2; best = (p - e.pos); }
+		}
+		return best;
+	}
+
+	// 敵スポナーの定期出撃
+	void updateEnemySpawnerProduction(double dt) {
+		(void)dt;
+		// simElapsed と nextFire を比較して出撃
+		for (auto& s : reds) {
+			if (!s.alive || s.type != StructureType::spawner) continue;
+			while (simElapsed + 1e-6 >= s.nextFire) {
+				spawnEnemyAt(s.cell);
+				s.nextFire += s.interval; // interval は beginSimulation で設定済み
+			}
+		}
+	}
+
+	// 敵ユニット更新（移動→接触で爆発）
+	void updateRedAgents(double dt) {
+		Array<Actor> stillAlive;
+		stillAlive.reserve(redAgents.size());
+
+		for (auto& e : redAgents) {
+			if (!e.alive) continue;
+
+			// ターゲットへ直進（簡易）
+			Vec2 to = enemySeekTargetVec(e);
+			if (to.lengthSq() > 1e-4) {
+				Vec2 step = to.setLength(e.speed * dt);
+				moveWithCollide(e, step);
+			}
+
+			// 味方（Blue）構造物に接触したら爆発
+			bool exploded = false;
+			if (const auto oc = brd.posToCell(e.pos)) {
+				const int idxB = brd.blueIndex[brd.idx(oc->x, oc->y)];
+				if (idxB >= 0) {
+					enemyExplodeAt(*oc);
+					e.alive = false;
+					exploded = true;
+				}
+			}
+
+			if (e.alive && !exploded) {
+				stillAlive << e;
+			}
+		}
+
+		redAgents.swap(stillAlive);
+	}
+
 	// シミュレーション更新
 	void updateSimulation(double dtReal) {
 		// ヒットストップ -> timeScale
@@ -868,6 +1144,15 @@ struct Game {
 
 		// 実弾・トレーサー・パーティクル
 		updateProjectiles(dt);
+
+		// 敵スポナー出撃
+		updateEnemySpawnerProduction(dt);
+
+		// 敵ユニット
+		updateRedAgents(dt);
+
+		// プレイヤー
+		updatePlayer(dt);
 
 		Array<Tracer> aliveT;
 		for (auto& t : tracers) {
@@ -930,8 +1215,12 @@ struct Game {
 
 	// 入力（プランニング）
 	void updatePlanning() {
-		// クリックで配置
-		if (MouseL.down()) {
+		// 先に「スポナーをクリックで出撃」を判定
+		if (trySpawnFromClickedSpawner()) {
+			// 出撃クリックの場合は配置処理をスキップ
+		}
+		else if (MouseL.down()) {
+			// クリックで配置（スポナー含む）
 			if (const auto oc = brd.screenToCell(Cursor::PosF())) {
 				String reason;
 				if (canPlace(Team::Blue, selectedType, *oc, reason)) {
@@ -940,10 +1229,14 @@ struct Game {
 				}
 			}
 		}
+
 		// Enterで自動戦闘開始
 		if (KeyEnter.down()) {
 			beginSimulation();
 		}
+
+		// プランニング中もプレイヤーは操作できる（移動で塗れる）
+		updatePlayer(Scene::DeltaTime());
 
 		// ステージ開始バナー進行
 		if (stageStarting) {
@@ -988,6 +1281,8 @@ struct Game {
 		blues << s;
 		brd.blueIndex[brd.idx(c.x, c.y)] = (int)blues.size() - 1;
 		moneyBlue -= GetSpec(type).cost;
+
+		// スポナーは出撃ポイント。出撃はクリック操作で
 		return true;
 	}
 
@@ -1047,6 +1342,17 @@ struct Game {
 				case StructureType::HQ:
 					Circle{ rc.center(), rc.w * 0.60 }.drawFrame(3, base);
 					break;
+				case StructureType::spawner:
+					// 歯車っぽいスポナー
+					Circle{ rc.center(), rc.w * 0.36 }.draw(base);
+					for (int i = 0; i < 6; ++i) {
+						const double ang = i * (Math::TwoPi / 6.0);
+						Vec2 p = rc.center() + Vec2{ Cos(ang), Sin(ang) } *rc.w * 0.55;
+						Circle{ p, rc.w * 0.10 }.draw(base);
+					}
+					Circle{ rc.center(), rc.w * 0.18 }.draw(ColorF{ 0,0,0,0.75 });
+					rc.drawFrame(2, ColorF{ 0,0,0,0.65 });
+					break;
 				}
 
 				// HPバー
@@ -1100,6 +1406,23 @@ struct Game {
 		}
 	}
 
+	// プレイヤー描画
+	void drawPlayer() const {
+		if (player && player->alive) {
+			Circle{ player->pos, player->radius }.draw(HSV{ 210, 0.9, 1.0 });
+			Circle{ player->pos, player->radius + 3 }.drawFrame(2, ColorF{ 1,1,1,0.6 });
+		}
+	}
+
+	// 敵ユニット描画
+	void drawEnemies() const {
+		for (const auto& e : redAgents) {
+			if (!e.alive) continue;
+			Circle{ e.pos, e.radius }.draw(HSV{ 0, 0.9, 1.0 });
+			Circle{ e.pos, e.radius + 2 }.drawFrame(2, ColorF{ 0,0,0,0.6 });
+		}
+	}
+
 	// UI（選択ボタンで selectedType を変更するため非const）
 	void drawUI() {
 		const RectF ui{ Scene::Width() - UIWidth + Margin * 0.5, Margin, UIWidth - Margin * 1.5, Scene::Height() - 2 * Margin };
@@ -1137,20 +1460,29 @@ struct Game {
 		drawButton(U"インクポンプ", StructureType::Pump, y += 42, CostPump);
 		drawButton(U"スナイパー", StructureType::Sniper, y += 42, CostSniper);
 		drawButton(U"迫撃砲", StructureType::Mortar, y += 42, CostMortar);
+		drawButton(U"スポナー", StructureType::spawner, y += 42, CostSpawner);
 
 		y += 60;
 		if (phase == Phase::Planning) {
-			FontAsset(U"UI")(U"[Click] 配置 / [Enter] 自動戦闘 10s").draw(18, Vec2{ ui.x + 14, y }, ColorF{ 0.95 });
+			FontAsset(U"UI")(U"[Click] 置く / スポナー[Click]出撃 / [Enter] 自動戦闘 10s").draw(18, Vec2{ ui.x + 14, y }, ColorF{ 0.95 });
+			FontAsset(U"UI")(U"[WASD] で移動して塗る / 敵はAIでスポーンし体当たり").draw(16, Vec2{ ui.x + 14, y + 24 }, ColorF{ 0.95 });
 		}
 		else if (phase == Phase::Simulating) {
 			FontAsset(U"UI")(U"自動戦闘中… 残り {:.1f}s"_fmt(simTime)).draw(18, Vec2{ ui.x + 14, y }, ColorF{ 0.95 });
+			FontAsset(U"UI")(U"敵はスポナーから定期出撃 → Blue構造物へ体当たり").draw(16, Vec2{ ui.x + 14, y + 24 }, ColorF{ 0.95 });
 		}
 		else {
 			FontAsset(U"UI")(U"[Enter] でも次へ進めます").draw(18, Vec2{ ui.x + 14, y }, ColorF{ 0.95 });
 		}
 
-		y += 28;
+		y += 48;
 		FontAsset(U"UI")(U"ターン {}"_fmt(turnCount)).draw(20, Vec2{ ui.x + 14, y }, ColorF{ 1 });
+
+		// プレイヤーの状態と敵ユニット数
+		if (player && player->alive) {
+			FontAsset(U"UI")(U"Player HP: {:.0f}/{}"_fmt(player->hp, HPPlayer)).draw(18, Vec2{ ui.x + 14, y + 26 }, ColorF{ 1 });
+		}
+		FontAsset(U"UI")(U"敵ユニット数: {}"_fmt(redAgents.count_if([](const Actor& a) { return a.alive; }))).draw(18, Vec2{ ui.x + 14, y + 50 }, ColorF{ 1 });
 	}
 
 	void drawHoverHelp() const {
@@ -1158,6 +1490,15 @@ struct Game {
 		if (const auto oc = brd.screenToCell(Cursor::PosF())) {
 			const Point c = *oc;
 			const RectF rc = brd.cellRect(c).stretched(-2);
+
+			// スポナー上にマウスがあるときは出撃ヒント
+			const int bi = brd.blueIndex[brd.idx(c.x, c.y)];
+			if (bi >= 0 && blues[bi].alive && blues[bi].type == StructureType::spawner) {
+				rc.drawFrame(3, ColorF{ 0.2,0.9,0.4,0.9 });
+				FontAsset(U"UI")(U"[Click] 出撃").draw(16, rc.pos.movedBy(2, 2), ColorF{ 1 });
+				return;
+			}
+
 			String reason;
 			const bool ok = canPlace(Team::Blue, selectedType, c, reason);
 			rc.drawFrame(3, ok ? ColorF{ 0.2,0.9,0.4,0.9 } : ColorF{ 0.9,0.2,0.2, 0.9 });
@@ -1231,6 +1572,8 @@ void Main() {
 			G.drawTracers();
 			G.drawParticles();
 			G.drawProjectiles();
+			G.drawPlayer();
+			G.drawEnemies();
 		}
 		// UI・ヘルプ・バナーはシェイクなしで描画（クリック判定のズレ防止）
 		G.drawUI();
