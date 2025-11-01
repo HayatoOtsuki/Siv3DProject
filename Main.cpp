@@ -1,11 +1,42 @@
 ﻿# include <Siv3D.hpp> // Siv3D v0.6.16
 #include "Game.h"
 
+
 void Main() {
 	Window::Resize(1600, 900);
 	Scene::SetBackground(ColorF{ 0.06, 0.06, 0.07 });
 	FontAsset::Register(U"UI", FontMethod::MSDF, 20, Typeface::Bold);
 	const ScopedRenderStates2D _sampler{ SamplerState::ClampLinear };
+
+	// 出力先フォルダ
+	const FilePath outDir = U"rom/";
+	FileSystem::CreateDirectories(outDir);
+
+	const ColorF blueBase = HSV{ 210, 0.9, 1.0 };
+	const ColorF redBase = HSV{ 0,   0.9, 1.0 };
+
+	Array<StructureType> types = {
+		StructureType::Basic, StructureType::Sprinkler, StructureType::Pump,
+		StructureType::Sniper, StructureType::Mortar, StructureType::HQ,
+		StructureType::spawner
+	};
+
+	// 出力サイズ
+	const Size iconSize{ 256, 256 };
+
+	// Blueバージョンを書き出し
+	for (auto t : types) {
+		const Image img = MakeStructureIcon(t, iconSize, blueBase);
+		const FilePath path = outDir + (U"blue_" + FileNameFor(t));
+		img.save(path);
+	}
+
+	// Redバージョンも欲しければ
+	for (auto t : types) {
+		const Image img = MakeStructureIcon(t, iconSize, redBase);
+		const FilePath path = outDir + (U"red_" + FileNameFor(t));
+		img.save(path);
+	}
 
 	Game G;
 	G.layout();
