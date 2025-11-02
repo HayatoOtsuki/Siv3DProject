@@ -20,6 +20,11 @@ void Main() {
 	AppState state = AppState::Title;
 	bool gameInitialized = false;
 
+	s3d::Texture titleImage;
+	if (s3d::FileSystem::Exists(U"rom/texture/Title.png")) {
+		titleImage = s3d::Texture{ U"rom/texture/Title.png", s3d::TextureDesc::Mipped };
+	}
+
 	while (System::Update()) {
 		const double dtReal = Scene::DeltaTime();
 
@@ -29,7 +34,6 @@ void Main() {
 			const RectF panel{ 0, 0, (double)Scene::Width(), (double)Scene::Height() };
 			panel.draw(ColorF{ 0,0,0,0.15 });
 
-			FontAsset(U"UI")(U"浸食！インクウォーズ").drawAt(48, Scene::Center().movedBy(0, -140), ColorF{ 1,1,1 });
 
 			// ボタン
 			const Vec2 c = Scene::Center();
