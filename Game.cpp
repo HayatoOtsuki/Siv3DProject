@@ -1279,7 +1279,7 @@ void Game::drawUI() {
 	const String ph =
 		(phase == Phase::Planning) ? U"フェーズ: 設置" :
 		(phase == Phase::Simulating) ? U"フェーズ: 自動戦闘" : U"フェーズ: 結果";
-	FontAsset(U"UI")(U"インクウォーズ（仮）").draw(24, Vec2{ ui.x + 14, ui.y + 10 }, ColorF{ 1 });
+	FontAsset(U"UI")(U"浸食！インクウォーズ").draw(24, Vec2{ ui.x + 14, ui.y + 10 }, ColorF{ 1 });
 	FontAsset(U"UI")(U"ステージ {}"_fmt(stage)).draw(20, Vec2{ ui.x + 14, ui.y + 42 }, ColorF{ 1 });
 	FontAsset(U"UI")(ph).draw(18, Vec2{ ui.x + 14, ui.y + 68 }, ColorF{ 1 });
 
@@ -1307,7 +1307,6 @@ void Game::drawUI() {
 	drawButton(U"インクポンプ", StructureType::Pump, y += 42, CostPump);
 	drawButton(U"スナイパー", StructureType::Sniper, y += 42, CostSniper);
 	drawButton(U"迫撃砲", StructureType::Mortar, y += 42, CostMortar);
-	// drawButton(U"スポナー", StructureType::spawner, y += 42, CostSpawner);
 
 	y += 60;
 	if (phase == Phase::Planning) {
