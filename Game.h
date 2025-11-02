@@ -112,6 +112,12 @@ private:
 	void damageAt(const s3d::Point& c, double dmg, Team attacker);
 	void applyAOE(const s3d::Point& center, int r, double paintDelta, double dmg, Team atk);
 
+	// 構造物乗っ取り
+	void captureStructureAt(const s3d::Point& c, Team from, Team to);
+
+	// タレットの狙い更新・回転補間
+	void updateTurretAim(double dt);
+
 	// 射撃系
 	s3d::Optional<s3d::Point> findTargetCell(Team atk, const s3d::Point& from, int range, bool turretOnly) const;
 	void spawnProjectile(Team atk, const TypeSpec& spec, const s3d::Vec2& muzzle, const s3d::Point& targetCell, ProjKind k, bool useArc, bool blocked, bool indirect, int aoe, double dmg, double paint, double speed, double radiusPx);

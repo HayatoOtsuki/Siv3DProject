@@ -2,6 +2,75 @@
 
 using namespace s3d;
 
+// 構造物用テクスチャのローダー/アクセサ（初回呼び出し時にロード）
+// 構造物用テクスチャのローダー/アクセサ（初回呼び出し時にロード）
+namespace {
+	// CurrentDirectory から複数候補を試してロードする
+	static Texture LoadTex(const FilePath& relUnderRom) {
+		// relUnderRom は "texture/T_sBasic.png" のように Rom 直下からの相対を渡す
+		const Array<FilePath> candidates = {
+			U"Rom/" + relUnderRom,      // 作業ディレクトリ直下に Rom がある場合
+			U"rom/" + relUnderRom,      // 小文字表記
+			U"../Rom/" + relUnderRom,   // 作業ディレクトリが App/ などで、一つ上に Rom がある場合（←あなたの構成に一致）
+			U"../rom/" + relUnderRom,
+			U"../../Rom/" + relUnderRom,
+			U"../../rom/" + relUnderRom,
+		};
+
+		for (const auto& p : candidates) {
+			if (FileSystem::Exists(p)) {
+				Texture t{ p };
+				if (t) {
+					return t;
+				}
+			}
+		}
+		return {};
+	}
+
+	const Texture& GetStructureTexture(StructureType t) {
+		static bool initialized = false;
+		static Texture texBasic, texSprinkler, texPump, texSniper, texMortar, texHQ, texSpawner;
+
+		if (!initialized) {
+			// Rom 直下からの相対パスを渡す
+			texBasic = LoadTex(U"texture/T_sBasic.png");
+			texSprinkler = LoadTex(U"texture/T_sSprinkler.png");
+			texPump = LoadTex(U"texture/T_sPump.png");
+			texSniper = LoadTex(U"texture/T_sSniper.png");
+			texMortar = LoadTex(U"texture/T_sMortar.png");
+			texHQ = LoadTex(U"texture/T_sHQ.png");
+			// texSpawner = LoadTex(U"texture/T_sSpaswner.png"); // 提供名に合わせる
+			initialized = true;
+		}
+
+		switch (t) {
+		case StructureType::Basic:     return texBasic;
+		case StructureType::Sprinkler: return texSprinkler;
+		case StructureType::Pump:      return texPump;
+		case StructureType::Sniper:    return texSniper;
+		case StructureType::Mortar:    return texMortar;
+		case StructureType::HQ:        return texHQ;
+		case StructureType::spawner:   return texSpawner;
+		default:                       return texBasic;
+		}
+	}
+
+	// 角度を [-pi, pi] に正規化
+	static double WrapAngle(double a) {
+		while (a <= -Math::Pi) a += Math::TwoPi;
+		while (a >   Math::Pi) a -= Math::TwoPi;
+		return a;
+	}
+
+	// 目標へ最大回転量で寄せる
+	static double StepAngleTowards(double current, double target, double maxStep) {
+		const double d = WrapAngle(target - current);
+		const double step = Clamp(d, -maxStep, maxStep);
+		return WrapAngle(current + step);
+	}
+}
+
 void Game::layout() {
 	const double leftW = Scene::Width() - UIWidth - 2 * Margin;
 	const double leftH = Scene::Height() - 2 * Margin;
@@ -36,9 +105,6 @@ char MapTip_Stage1[GH][GW] = {
 	"...................................",
 };
 
-
-
-
 void Game::buildMapForStage(int stageNo) {
 	brd.init();
 
@@ -50,11 +116,10 @@ void Game::buildMapForStage(int stageNo) {
 			Tile& t = brd.tiles[brd.idx(x, y)];
 			bool makeWall = false;
 
-
 			if (MapTip_Stage1[y][x] == '0') makeWall = true;
 			if (MapTip_Stage1[y][x] == 'P') bHQ = { x, y }; //自軍HQ設置
 			if (MapTip_Stage1[y][x] == 'E') rHQ = { x, y }; //敵軍HQ設置
-		
+
 			if (makeWall) {
 				t.kind = TileKind::Wall;
 				t.paint = 0.5f;
@@ -291,9 +356,10 @@ void Game::applyPaintAt(const Point& c, double delta) {
 	t.paint = (float)(nv < 0.0 ? 0.0 : (nv > 1.0 ? 1.0 : nv));
 }
 
-// 構造体ダメージ
+// 構造体ダメージ（乗っ取り対応）
 void Game::damageAt(const Point& c, double dmg, Team attacker) {
 	if (!brd.inBounds(c.x, c.y)) return;
+
 	if (attacker == Team::Blue) {
 		int idxR = brd.redIndex[brd.idx(c.x, c.y)];
 		if (idxR >= 0) {
@@ -301,16 +367,22 @@ void Game::damageAt(const Point& c, double dmg, Team attacker) {
 			if (!s.alive) return;
 			s.hp -= dmg;
 			if (s.hp <= 0.0) {
-				s.alive = false;
-				brd.redIndex[brd.idx(c.x, c.y)] = -1;
+				// 乗っ取り（HQ は除く）
+				const bool wasHQ = (s.type == StructureType::HQ);
+				if (!wasHQ) {
+					captureStructureAt(c, Team::Red, Team::Blue);
+				}
+				else {
+					// HQ は破壊扱い
+					s.alive = false;
+					brd.redIndex[brd.idx(c.x, c.y)] = -1;
+				}
+
+				// 視覚効果・ペイント（Blue 側）
 				applyPaintAt(c, +0.20);
-				SpawnParticles(brd.cellCenter(c), HSV{ 0,0.7,1.0 }, 28, 150, 320, 0.30, 0.6, 3, 20);
+				SpawnParticles(brd.cellCenter(c), HSV{ 210,0.7,1.0 }, 28, 150, 320, 0.30, 0.6, 3, 20);
 				AddShake(8.0, 0.15);
 				hitStopTimer = Max(hitStopTimer, 0.04);
-
-				//ダメージ
-				const bool big = (s.type == StructureType::HQ);
-				MyNamespace::SFX().play(MyNamespace::AudioID::SE_Hit, 1.0, Random(0.98, 1.02));
 			}
 		}
 	}
@@ -321,17 +393,21 @@ void Game::damageAt(const Point& c, double dmg, Team attacker) {
 			if (!s.alive) return;
 			s.hp -= dmg;
 			if (s.hp <= 0.0) {
-				s.alive = false;
-				brd.blueIndex[brd.idx(c.x, c.y)] = -1;
+				const bool wasHQ = (s.type == StructureType::HQ);
+				if (!wasHQ) {
+					captureStructureAt(c, Team::Blue, Team::Red);
+				}
+				else {
+					// HQ は破壊扱い
+					s.alive = false;
+					brd.blueIndex[brd.idx(c.x, c.y)] = -1;
+				}
+
+				// 視覚効果・ペイント（Red 側）
 				applyPaintAt(c, -0.20);
-				SpawnParticles(brd.cellCenter(c), HSV{ 210,0.7,1.0 }, 28, 150, 320, 0.30, 0.6, 3, 20);
+				SpawnParticles(brd.cellCenter(c), HSV{ 0,0.7,1.0 }, 28, 150, 320, 0.30, 0.6, 3, 20);
 				AddShake(8.0, 0.15);
 				hitStopTimer = Max(hitStopTimer, 0.04);
-
-				//ダメージ
-				const bool big = (s.type == StructureType::HQ);
-				MyNamespace::SFX().play(MyNamespace::AudioID::SE_Hit, 1.0, Random(0.98, 1.02));
-
 			}
 		}
 	}
@@ -349,6 +425,79 @@ void Game::applyAOE(const Point& center, int r, double paintDelta, double dmg, T
 		applyPaintAt(c, paintDelta * (0.5 + 0.5 * w));
 		if (dmg > 0.0) damageAt(c, dmg * (0.6 + 0.4 * w), atk);
 	}
+}
+
+// 乗っ取り本体
+void Game::captureStructureAt(const Point& c, Team from, Team to) {
+	if (!brd.inBounds(c.x, c.y)) return;
+
+	// from -> to への乗っ取り。HQ は対象外（破壊扱い）
+	auto captureOne = [&](Array<Structure>& src, Array<Structure>& dst, int& cellIndexSrc, int& cellIndexDst) {
+		const int idx = cellIndexSrc;
+		if (idx < 0) return;
+		Structure& oldS = src[idx];
+		if (!oldS.alive) return;
+		if (oldS.type == StructureType::HQ) {
+			// HQ は乗っ取り不可：破壊
+			oldS.alive = false;
+			cellIndexSrc = -1;
+			return;
+		}
+
+		// 新オーナーの構造物を作成して追加
+		Structure ns = oldS;
+		ns.owner = to;
+		ns.hp = GetSpec(ns.type).maxHP;
+		ns.alive = true;
+
+		// 発射スケジュールを再設定（直近ですぐ撃てるように）
+		const TypeSpec& spec = GetSpec(ns.type);
+		if (spec.shots > 0) {
+			ns.interval = (SimDuration / spec.shots);
+			ns.nextFire = simElapsed; // すぐに発射可能
+		}
+		else {
+			ns.interval = 9999.0;
+			ns.nextFire = 9999.0;
+		}
+
+		dst << ns;
+		cellIndexDst = static_cast<int>(dst.size()) - 1;
+
+		// 旧側を無効化
+		oldS.alive = false;
+		cellIndexSrc = -1;
+		};
+
+	const int ci = brd.idx(c.x, c.y);
+
+	if (from == Team::Red && to == Team::Blue) {
+		captureOne(reds, blues, brd.redIndex[ci], brd.blueIndex[ci]);
+	}
+	else if (from == Team::Blue && to == Team::Red) {
+		captureOne(blues, reds, brd.blueIndex[ci], brd.redIndex[ci]);
+	}
+}
+
+// タレットの狙い更新・回転補間（毎フレーム）
+void Game::updateTurretAim(double dt) {
+	auto stepA = [&](Array<Structure>& a, Team /*side*/) {
+		for (auto& s : a) {
+			if (!s.alive) continue;
+
+			// スプリンクラーは常時右回転（時計回り）
+			if (s.type == StructureType::Sprinkler) {
+				s.rot = WrapAngle(s.rot + SprinklerSpinSpeed * dt);
+				continue;
+			}
+
+			// 他は「現在の目標角度」へスムーズに寄せる（目標角度は発射時にセット）
+			const double maxStep = TurretTurnSpeed * dt;
+			s.rot = StepAngleTowards(s.rot, s.rotTarget, maxStep);
+		}
+		};
+	stepA(blues, Team::Blue);
+	stepA(reds, Team::Red);
 }
 
 // ターゲット選択
@@ -440,22 +589,7 @@ void Game::fireOnce(Structure& s, Team atk) {
 
 	const Vec2 muzzle = brd.cellCenter(s.cell);
 
-	// 種別に応じて発射音
-	switch (s.type) {
-	case StructureType::Sprinkler:
-		MyNamespace::SFX().playRandomPitch(MyNamespace::AudioID::SE_Sprinkler, 1.0, 0.98, 1.02);
-		break;
-	case StructureType::Mortar:
-		MyNamespace::SFX().play(MyNamespace::AudioID::SE_MortarLaunch);
-		break;
-	case StructureType::Sniper:
-		MyNamespace::SFX().play(MyNamespace::AudioID::SE_ShootSniper);
-		break;
-	default: // Basic 
-		MyNamespace::SFX().playRandomPitch(MyNamespace::AudioID::SE_ShootBasic, 1.0, 0.98, 1.02);
-		break;
-	}
-
+	// スプリンクラーは散布のみ＆回転は常時スピンに委ねる
 	if (s.type == StructureType::Sprinkler) {
 		for (int i = 0; i < 3; ++i) {
 			Point tc = s.cell + Point{ Random(-(int)spec.range, (int)spec.range), Random(-(int)spec.range, (int)spec.range) };
@@ -471,11 +605,19 @@ void Game::fireOnce(Structure& s, Team atk) {
 	if (!opt) return;
 	Point target = *opt;
 
+	// ブレを反映
 	if (spec.spread > 0.05) {
 		target.x += Random(-(int)spec.spread, (int)spec.spread);
 		target.y += Random(-(int)spec.spread, (int)spec.spread);
 		target.x = limit(target.x, 0, GW - 1);
 		target.y = limit(target.y, 0, GH - 1);
+	}
+
+	// 実際に撃つ方向（ブレ適用後）を目標角度に設定
+	{
+		const Vec2 hitPos = brd.cellCenter(target);
+		const double ang = Math::Atan2((hitPos - muzzle).y, (hitPos - muzzle).x);
+		s.rotTarget = ang;
 	}
 
 	if (s.type == StructureType::Mortar) {
@@ -579,18 +721,15 @@ void Game::impactAt(const Projectile& pr, const Point& ic) {
 		Circle{ brd.cellCenter(ic), 16.0 + pr.aoeRadius * brd.tileSize * 0.25 }.drawFrame(3, TeamColor(pr.owner).withAlpha(0.6));
 		AddShake(7.0, 0.12);
 		hitStopTimer = Max(hitStopTimer, 0.02);
-
 	}
 	else {
 		applyPaintAt(ic, (pr.owner == Team::Blue ? +pr.paint : -pr.paint));
 		damageAt(ic, pr.damage, pr.owner);
 		SpawnParticles(brd.cellCenter(ic), (pr.owner == Team::Blue ? HSV{ 210,0.8,1.0 } : HSV{ 0,0.8,1.0 }), 10, 120, 220, 0.20, 0.45, 3, 12);
 		AddShake(3.0, 0.06);
-
-		// 被弾音
-		MyNamespace::SFX().playRandom(MyNamespace::AudioID::SE_Hit, 0.9, Random(0.97, 1.03));
 	}
 }
+
 // ===================== プレイヤー操作・敵AI（体当たり） =====================
 
 bool Game::isWallAt(const Vec2& p) const {
@@ -829,12 +968,11 @@ void Game::updateSimulation(double dtReal) {
 		simTime = 0.0;
 		phase = Phase::Summary;
 		stageCleared = isBlueWin() && !isBlueLose();
-		// ステージクリア音
-		if (stageCleared) {
-			MyNamespace::SFX().play(MyNamespace::AudioID::SE_StageClear);
-		}
 		clearShakeAndHitStop();
 	}
+
+	// まずは狙い方向の推定と回転補間
+	updateTurretAim(dt);
 
 	// 発射スケジュール
 	auto stepFire = [&](Array<Structure>& a, Team atk) {
@@ -855,7 +993,7 @@ void Game::updateSimulation(double dtReal) {
 	updateProjectiles(dt);
 
 	// 敵スポナー出撃
-	updateEnemySpawnerProduction(dt);
+	// updateEnemySpawnerProduction(dt);
 
 	// 敵ユニット
 	updateRedAgents(dt);
@@ -985,7 +1123,6 @@ bool Game::placeBlue(StructureType type, const Point& c) {
 	blues << s;
 	brd.blueIndex[brd.idx(c.x, c.y)] = (int)blues.size() - 1;
 	moneyBlue -= GetSpec(type).cost;
-	MyNamespace::SFX().playRandomPitch(MyNamespace::AudioID::SE_Place, 1.0, 0.98, 1.02);
 	return true;
 }
 
@@ -1020,48 +1157,54 @@ void Game::drawStructures() const {
 	auto drawSide = [&](const Array<Structure>& a) {
 		for (const auto& s : a) {
 			if (!s.alive) continue;
-			const RectF rc = brd.cellRect(s.cell).stretched(-4);
+			const RectF rc = brd.cellRect(s.cell).stretched(5);
+			const Vec2 center = rc.center();
 			const ColorF base = (s.owner == Team::Blue ? HSV{ 210,0.9,1.0 } : HSV{ 0,0.9,1.0 });
 
-			switch (s.type) {
-			case StructureType::Basic:
-				rc.draw(base.withAlpha(0.85));
-				rc.drawFrame(2, ColorF{ 0,0,0,0.65 });
-				break;
-			case StructureType::Sprinkler:
-				Circle{ rc.center(), rc.w * 0.32 }.draw(base);
-				Circle{ rc.center(), rc.w * 0.50 }.drawFrame(2, base);
-				break;
-			case StructureType::Pump:
-				Triangle{ rc.center(), rc.w * 0.9, 0_deg }.draw(base);
-				break;
-			case StructureType::Sniper:
-				RectF{ Arg::center = rc.center(), rc.w * 0.9, rc.h * 0.55 }.draw(base);
-				break;
-			case StructureType::Mortar:
-				Circle{ rc.center(), rc.w * 0.42 }.draw(base);
-				RectF{ Arg::center = rc.center().movedBy(0, -rc.h * 0.15), rc.w * 0.28, rc.h * 0.35 }.draw(ColorF{ 0 });
-				break;
-			case StructureType::HQ:
-				Circle{ rc.center(), rc.w * 0.60 }.drawFrame(3, base);
-				break;
-			case StructureType::spawner:
-				Circle{ rc.center(), rc.w * 0.36 }.draw(base);
-				for (int i = 0; i < 6; ++i) {
-					const double ang = i * (Math::TwoPi / 6.0);
-					Vec2 p = rc.center() + Vec2{ Cos(ang), Sin(ang) } * rc.w * 0.55;
-					Circle{ p, rc.w * 0.10 }.draw(base);
+			// テクスチャ描画（存在しない場合は従来の図形描画にフォールバック）
+			const Texture& tex = GetStructureTexture(s.type);
+			bool drawn = false;
+			if (tex) {
+				// 右向き基準のテクスチャを s.rot で回転して中心描画
+				tex.resized(rc.w, rc.h).rotated(s.rot).drawAt(center, base);
+				drawn = true;
+			}
+
+			if (!drawn) {
+				// フォールバック: 旧シェイプ描画（回転なし）
+				switch (s.type) {
+				case StructureType::Basic:
+					rc.draw(base.withAlpha(0.85));
+					rc.drawFrame(2, ColorF{ 0,0,0,0.65 });
+					break;
+				case StructureType::Sprinkler:
+					Circle{ center, rc.w * 0.32 }.draw(base);
+					Circle{ center, rc.w * 0.50 }.drawFrame(2, base);
+					break;
+				case StructureType::Pump:
+					Triangle{ center, rc.w * 0.9, 0_deg }.draw(base);
+					break;
+				case StructureType::Sniper:
+					RectF{ Arg::center = center, rc.w * 0.9, rc.h * 0.55 }.draw(base);
+					break;
+				case StructureType::Mortar:
+					Circle{ center, rc.w * 0.42 }.draw(base);
+					RectF{ Arg::center = center.movedBy(0, -rc.h * 0.15), rc.w * 0.28, rc.h * 0.35 }.draw(ColorF{ 0 });
+					break;
+				case StructureType::HQ:
+					Circle{ center, rc.w * 0.60 }.drawFrame(3, base);
+					break;
+				case StructureType::spawner:
+					// スポナーが残っている場合のフォールバック
+					Circle{ center, rc.w * 0.36 }.draw(base);
+					break;
 				}
-				Circle{ rc.center(), rc.w * 0.18 }.draw(ColorF{ 0,0,0,0.75 });
-				rc.drawFrame(2, ColorF{ 0,0,0,0.65 });
-				break;
 			}
 
 			// HPバー
 			const double maxHP = GetSpec(s.type).maxHP;
 			if (maxHP > 0.0 && s.type != StructureType::HQ) {
-				const double ratio = (s.hp / maxHP);
-				const double rr = (ratio < 0.0 ? 0.0 : (ratio > 1.0 ? 1.0 : ratio));
+				const double rr = Clamp(s.hp / maxHP, 0.0, 1.0);
 				const RectF hb{ rc.x, rc.y - 6, rc.w, 4 };
 				hb.draw(ColorF{ 0,0,0,0.5 });
 				RectF{ hb.pos, hb.w * rr, hb.h }.draw((s.owner == Team::Blue) ? ColorF{ 0.2,0.9,0.3 } : ColorF{ 0.9,0.2,0.2 });
@@ -1136,7 +1279,7 @@ void Game::drawUI() {
 	const String ph =
 		(phase == Phase::Planning) ? U"フェーズ: 設置" :
 		(phase == Phase::Simulating) ? U"フェーズ: 自動戦闘" : U"フェーズ: 結果";
-	FontAsset(U"UI")(U"インクウォーズ（仮）").draw(24, Vec2{ ui.x + 14, ui.y + 10 }, ColorF{ 1 });
+	FontAsset(U"UI")(U"浸食！インクウォーズ").draw(24, Vec2{ ui.x + 14, ui.y + 10 }, ColorF{ 1 });
 	FontAsset(U"UI")(U"ステージ {}"_fmt(stage)).draw(20, Vec2{ ui.x + 14, ui.y + 42 }, ColorF{ 1 });
 	FontAsset(U"UI")(ph).draw(18, Vec2{ ui.x + 14, ui.y + 68 }, ColorF{ 1 });
 
@@ -1164,7 +1307,6 @@ void Game::drawUI() {
 	drawButton(U"インクポンプ", StructureType::Pump, y += 42, CostPump);
 	drawButton(U"スナイパー", StructureType::Sniper, y += 42, CostSniper);
 	drawButton(U"迫撃砲", StructureType::Mortar, y += 42, CostMortar);
-	drawButton(U"スポナー", StructureType::spawner, y += 42, CostSpawner);
 
 	y += 60;
 	if (phase == Phase::Planning) {

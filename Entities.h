@@ -17,6 +17,10 @@ struct Structure {
 	bool alive = true;
 	double nextFire = 0.0;
 	double interval = 1.0;
+
+	// タレット回転（右向き=0rad 基準）
+	double rot = 0.0;        // 現在角度（rad）
+	double rotTarget = 0.0;  // 目標角度（rad）
 };
 
 struct Tracer {

@@ -3,6 +3,8 @@
 #include "audio.h"
 
 
+enum class AppState { Title, Playing };
+
 void Main() {
 	Window::Resize(1600, 900);
 	Scene::SetBackground(ColorF{ 0.06, 0.06, 0.07 });
@@ -15,12 +17,45 @@ void Main() {
 	MyNamespace::SFX().setMasterVolume(0.9);
 
 	Game G;
-	G.layout();
-	G.buildMapForStage(1);
+	AppState state = AppState::Title;
+	bool gameInitialized = false;
 
 	while (System::Update()) {
 		const double dtReal = Scene::DeltaTime();
 
+		// タイトル画面
+		if (state == AppState::Title) {
+			// 背景とタイトル
+			const RectF panel{ 0, 0, (double)Scene::Width(), (double)Scene::Height() };
+			panel.draw(ColorF{ 0,0,0,0.15 });
+
+			FontAsset(U"UI")(U"浸食！インクウォーズ").drawAt(48, Scene::Center().movedBy(0, -140), ColorF{ 1,1,1 });
+
+			// ボタン
+			const Vec2 c = Scene::Center();
+			const double w = 220;
+
+			const bool start = SimpleGUI::Button(U"スタート", Vec2{ c.x - w * 0.5, c.y - 20 }, w);
+			const bool quit = SimpleGUI::Button(U"終了", Vec2{ c.x - w * 0.5, c.y + 36 }, w);
+
+			// Enter でもスタート
+			const bool enter = KeyEnter.down() || KeySpace.down();
+
+			if (start || enter) {
+				if (!gameInitialized) {
+					G.layout();
+					G.buildMapForStage(1);
+					gameInitialized = true;
+				}
+				state = AppState::Playing;
+			}
+			if (quit || KeyEscape.down()) {
+				System::Exit();
+			}
+			continue; // ゲーム更新はスキップ
+		}
+
+		// ここからゲーム本編
 		// レイアウトはリサイズに追従
 		G.layout();
 
