@@ -1,22 +1,20 @@
 ﻿#include "Game.h"
+#include "map.h"
 
 using namespace s3d;
 
 // 構造物用テクスチャのローダー/アクセサ（初回呼び出し時にロード）
-// 構造物用テクスチャのローダー/アクセサ（初回呼び出し時にロード）
 namespace {
 	// CurrentDirectory から複数候補を試してロードする
 	static Texture LoadTex(const FilePath& relUnderRom) {
-		// relUnderRom は "texture/T_sBasic.png" のように Rom 直下からの相対を渡す
 		const Array<FilePath> candidates = {
-			U"Rom/" + relUnderRom,      // 作業ディレクトリ直下に Rom がある場合
-			U"rom/" + relUnderRom,      // 小文字表記
-			U"../Rom/" + relUnderRom,   // 作業ディレクトリが App/ などで、一つ上に Rom がある場合（←あなたの構成に一致）
+			U"Rom/" + relUnderRom,
+			U"rom/" + relUnderRom,
+			U"../Rom/" + relUnderRom,
 			U"../rom/" + relUnderRom,
 			U"../../Rom/" + relUnderRom,
 			U"../../rom/" + relUnderRom,
 		};
-
 		for (const auto& p : candidates) {
 			if (FileSystem::Exists(p)) {
 				Texture t{ p };
@@ -28,19 +26,36 @@ namespace {
 		return {};
 	}
 
+	// Rom系からオーディオを探してロード
+	static Audio LoadSnd(const FilePath& relUnderRom) {
+		const Array<FilePath> candidates = {
+			U"Rom/" + relUnderRom,
+			U"rom/" + relUnderRom,
+			U"../Rom/" + relUnderRom,
+			U"../rom/" + relUnderRom,
+			U"../../Rom/" + relUnderRom,
+			U"../../rom/" + relUnderRom,
+		};
+		for (const auto& p : candidates) {
+			if (FileSystem::Exists(p)) {
+				Audio a{ p };
+				if (a) return a;
+			}
+		}
+		return {};
+	}
+
 	const Texture& GetStructureTexture(StructureType t) {
 		static bool initialized = false;
 		static Texture texBasic, texSprinkler, texPump, texSniper, texMortar, texHQ, texSpawner;
 
 		if (!initialized) {
-			// Rom 直下からの相対パスを渡す
 			texBasic = LoadTex(U"texture/T_sBasic.png");
 			texSprinkler = LoadTex(U"texture/T_sSprinkler.png");
 			texPump = LoadTex(U"texture/T_sPump.png");
 			texSniper = LoadTex(U"texture/T_sSniper.png");
 			texMortar = LoadTex(U"texture/T_sMortar.png");
 			texHQ = LoadTex(U"texture/T_sHQ.png");
-			// texSpawner = LoadTex(U"texture/T_sSpaswner.png"); // 提供名に合わせる
 			initialized = true;
 		}
 
@@ -59,7 +74,7 @@ namespace {
 	// 角度を [-pi, pi] に正規化
 	static double WrapAngle(double a) {
 		while (a <= -Math::Pi) a += Math::TwoPi;
-		while (a >   Math::Pi) a -= Math::TwoPi;
+		while (a > Math::Pi) a -= Math::TwoPi;
 		return a;
 	}
 
@@ -69,6 +84,24 @@ namespace {
 		const double step = Clamp(d, -maxStep, maxStep);
 		return WrapAngle(current + step);
 	}
+}
+
+// ====== Audio 初期化 ======
+void Game::initAudio() {
+	if (audioReady) return;
+
+	// 発射音
+	sfxShotBasic = LoadSnd(U"audio/T_sBasic.mp3");
+	sfxShotSprinkler = LoadSnd(U"audio/T_sSprinkler.mp3");
+	sfxShotSniper = LoadSnd(U"audio/T_sSniper.mp3");
+	sfxShotMortar = LoadSnd(U"audio/T_sMortar.mp3");
+
+	// 結果SE / UI
+	sfxStageClear = LoadSnd(U"audio/StageClear.wav");
+	sfxGameOver = LoadSnd(U"audio/gameOver.wav");
+	sfxUIButton = LoadSnd(U"audio/Buttom.mp3");
+
+	audioReady = true;
 }
 
 void Game::layout() {
@@ -82,30 +115,10 @@ void Game::layout() {
 	brd.gridRect = RectF{ Margin, Margin, gridW, gridH };
 }
 
-char MapTip_Stage1[GH][GW] = {
-	"...................................",
-	"......0............................",
-	"......0............................",
-	"......0............................",
-	"......0............................",
-	"......0............................",
-	"...................................",
-	"...........0.......................",
-	"...........0.......................",
-	"..P........0.....................E.",
-	"...........0.......................",
-	"...........0.......................",
-	"...................................",
-	"...................................",
-	"......0............................",
-	"......0............................",
-	"......0............................",
-	"......0............................",
-	"......0............................",
-	"...................................",
-};
-
 void Game::buildMapForStage(int stageNo) {
+	// Audio を最初に準備
+	initAudio();
+
 	brd.init();
 
 	Point bHQ{ -1, -1 };
@@ -182,6 +195,7 @@ void Game::buildMapForStage(int stageNo) {
 	stageStarting = true;
 	stageBannerT = 0.0;
 
+	summarySfxPlayed = false; // 念のためリセット
 	clearShakeAndHitStop();
 }
 
@@ -591,6 +605,7 @@ void Game::fireOnce(Structure& s, Team atk) {
 
 	// スプリンクラーは散布のみ＆回転は常時スピンに委ねる
 	if (s.type == StructureType::Sprinkler) {
+		if (sfxShotSprinkler) sfxShotSprinkler.playOneShot(0.6);
 		for (int i = 0; i < 3; ++i) {
 			Point tc = s.cell + Point{ Random(-(int)spec.range, (int)spec.range), Random(-(int)spec.range, (int)spec.range) };
 			tc.x = limit(tc.x, 0, GW - 1);
@@ -605,7 +620,7 @@ void Game::fireOnce(Structure& s, Team atk) {
 	if (!opt) return;
 	Point target = *opt;
 
-	// ブレを反映
+	// ブレ
 	if (spec.spread > 0.05) {
 		target.x += Random(-(int)spec.spread, (int)spec.spread);
 		target.y += Random(-(int)spec.spread, (int)spec.spread);
@@ -620,15 +635,19 @@ void Game::fireOnce(Structure& s, Team atk) {
 		s.rotTarget = ang;
 	}
 
+	// 発射音
 	if (s.type == StructureType::Mortar) {
+		if (sfxShotMortar) sfxShotMortar.playOneShot(0.9);
 		spawnProjectile(atk, spec, muzzle, target,
 			ProjKind::Mortar, true, false, true, spec.aoeRadius, spec.damage, spec.paint, spec.projSpeed, spec.projRadius);
 	}
 	else if (s.type == StructureType::Sniper) {
+		if (sfxShotSniper) sfxShotSniper.playOneShot(0.8);
 		spawnProjectile(atk, spec, muzzle, target,
 			ProjKind::Sniper, false, true, false, 0, spec.damage, spec.paint, spec.projSpeed, spec.projRadius);
 	}
 	else { // Basic
+		if (sfxShotBasic) sfxShotBasic.playOneShot(0.7);
 		spawnProjectile(atk, spec, muzzle, target,
 			ProjKind::Bullet, false, true, false, 0, spec.damage, spec.paint, spec.projSpeed, spec.projRadius);
 	}
@@ -1047,15 +1066,15 @@ void Game::updateSummary() {
 
 	if (isBlueWin()) {
 		const bool clicked = SimpleGUI::Button(U"次のステージへ [Enter]", Vec2{ panel.center().x - 160, panel.center().y - 10 }, 220);
-		if (clicked || enter) { gotoNextStage(); return; }
+		if (clicked || enter) { if (sfxUIButton) sfxUIButton.playOneShot(0.8); gotoNextStage(); return; }
 	}
 	else if (isBlueLose()) {
 		const bool clicked = SimpleGUI::Button(U"ステージ再挑戦 [Enter]", Vec2{ panel.center().x - 120, panel.center().y - 10 }, 240);
-		if (clicked || enter) { buildMapForStage(stage); return; }
+		if (clicked || enter) { if (sfxUIButton) sfxUIButton.playOneShot(0.8); buildMapForStage(stage); return; }
 	}
 	else {
 		const bool clicked = SimpleGUI::Button(U"次ターンへ（収益計算） [Enter]", Vec2{ panel.center().x - 160, panel.center().y - 10 }, 320);
-		if (clicked || enter) { endSimulationAndScore(); return; }
+		if (clicked || enter) { if (sfxUIButton) sfxUIButton.playOneShot(0.8); endSimulationAndScore(); return; }
 	}
 	FontAsset(U"UI")(U"Enter ですすむ / クリックでも可").drawAt(20, panel.center().movedBy(0, 36), ColorF{ 0.95 });
 }

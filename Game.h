@@ -139,4 +139,19 @@ private:
 	void updateEnemySpawnerProduction(double dt);
 	void updateRedAgents(double dt);
 
+	// ====== Audio ======
+	void initAudio();              // 一度だけロード
+	bool audioReady = false;
+	bool summarySfxPlayed = false; // サマリーSE多重防止
+
+	// 発射音
+	s3d::Audio sfxShotBasic;
+	s3d::Audio sfxShotSprinkler;
+	s3d::Audio sfxShotSniper;
+	s3d::Audio sfxShotMortar;
+
+	// 結果SE / UIボタン
+	s3d::Audio sfxStageClear;
+	s3d::Audio sfxGameOver;
+	s3d::Audio sfxUIButton;
 };
