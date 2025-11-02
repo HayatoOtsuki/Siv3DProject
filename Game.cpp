@@ -346,9 +346,10 @@ void Game::applyPaintAt(const Point& c, double delta) {
 	t.paint = (float)(nv < 0.0 ? 0.0 : (nv > 1.0 ? 1.0 : nv));
 }
 
-// 構造体ダメージ
+// 構造体ダメージ（乗っ取り対応）
 void Game::damageAt(const Point& c, double dmg, Team attacker) {
 	if (!brd.inBounds(c.x, c.y)) return;
+
 	if (attacker == Team::Blue) {
 		int idxR = brd.redIndex[brd.idx(c.x, c.y)];
 		if (idxR >= 0) {
@@ -356,10 +357,20 @@ void Game::damageAt(const Point& c, double dmg, Team attacker) {
 			if (!s.alive) return;
 			s.hp -= dmg;
 			if (s.hp <= 0.0) {
-				s.alive = false;
-				brd.redIndex[brd.idx(c.x, c.y)] = -1;
+				// 乗っ取り（HQ は除く）
+				const bool wasHQ = (s.type == StructureType::HQ);
+				if (!wasHQ) {
+					captureStructureAt(c, Team::Red, Team::Blue);
+				}
+				else {
+					// HQ は破壊扱い
+					s.alive = false;
+					brd.redIndex[brd.idx(c.x, c.y)] = -1;
+				}
+
+				// 視覚効果・ペイント（Blue 側）
 				applyPaintAt(c, +0.20);
-				SpawnParticles(brd.cellCenter(c), HSV{ 0,0.7,1.0 }, 28, 150, 320, 0.30, 0.6, 3, 20);
+				SpawnParticles(brd.cellCenter(c), HSV{ 210,0.7,1.0 }, 28, 150, 320, 0.30, 0.6, 3, 20);
 				AddShake(8.0, 0.15);
 				hitStopTimer = Max(hitStopTimer, 0.04);
 			}
@@ -372,10 +383,19 @@ void Game::damageAt(const Point& c, double dmg, Team attacker) {
 			if (!s.alive) return;
 			s.hp -= dmg;
 			if (s.hp <= 0.0) {
-				s.alive = false;
-				brd.blueIndex[brd.idx(c.x, c.y)] = -1;
+				const bool wasHQ = (s.type == StructureType::HQ);
+				if (!wasHQ) {
+					captureStructureAt(c, Team::Blue, Team::Red);
+				}
+				else {
+					// HQ は破壊扱い
+					s.alive = false;
+					brd.blueIndex[brd.idx(c.x, c.y)] = -1;
+				}
+
+				// 視覚効果・ペイント（Red 側）
 				applyPaintAt(c, -0.20);
-				SpawnParticles(brd.cellCenter(c), HSV{ 210,0.7,1.0 }, 28, 150, 320, 0.30, 0.6, 3, 20);
+				SpawnParticles(brd.cellCenter(c), HSV{ 0,0.7,1.0 }, 28, 150, 320, 0.30, 0.6, 3, 20);
 				AddShake(8.0, 0.15);
 				hitStopTimer = Max(hitStopTimer, 0.04);
 			}
@@ -396,6 +416,59 @@ void Game::applyAOE(const Point& center, int r, double paintDelta, double dmg, T
 		if (dmg > 0.0) damageAt(c, dmg * (0.6 + 0.4 * w), atk);
 	}
 }
+
+// 乗っ取り本体
+void Game::captureStructureAt(const Point& c, Team from, Team to) {
+	if (!brd.inBounds(c.x, c.y)) return;
+
+	// from -> to への乗っ取り。HQ は対象外（破壊扱い）
+	auto captureOne = [&](Array<Structure>& src, Array<Structure>& dst, int& cellIndexSrc, int& cellIndexDst) {
+		const int idx = cellIndexSrc;
+		if (idx < 0) return;
+		Structure& oldS = src[idx];
+		if (!oldS.alive) return;
+		if (oldS.type == StructureType::HQ) {
+			// HQ は乗っ取り不可：破壊
+			oldS.alive = false;
+			cellIndexSrc = -1;
+			return;
+		}
+
+		// 新オーナーの構造物を作成して追加
+		Structure ns = oldS;
+		ns.owner = to;
+		ns.hp = GetSpec(ns.type).maxHP;
+		ns.alive = true;
+
+		// 発射スケジュールを再設定（直近ですぐ撃てるように）
+		const TypeSpec& spec = GetSpec(ns.type);
+		if (spec.shots > 0) {
+			ns.interval = (SimDuration / spec.shots);
+			ns.nextFire = simElapsed; // すぐに発射可能
+		}
+		else {
+			ns.interval = 9999.0;
+			ns.nextFire = 9999.0;
+		}
+
+		dst << ns;
+		cellIndexDst = static_cast<int>(dst.size()) - 1;
+
+		// 旧側を無効化
+		oldS.alive = false;
+		cellIndexSrc = -1;
+		};
+
+	const int ci = brd.idx(c.x, c.y);
+
+	if (from == Team::Red && to == Team::Blue) {
+		captureOne(reds, blues, brd.redIndex[ci], brd.blueIndex[ci]);
+	}
+	else if (from == Team::Blue && to == Team::Red) {
+		captureOne(blues, reds, brd.blueIndex[ci], brd.redIndex[ci]);
+	}
+}
+
 
 // ターゲット選択
 Optional<Point> Game::findTargetCell(Team atk, const Point& from, int range, bool turretOnly) const {

@@ -64,10 +64,6 @@ inline const TypeSpec& GetSpec(StructureType t) {
 	static TypeSpec sHQ{
 		0, HPHQ, 0, 0, 0, 0, 0, false, false, false, 0.0, 0.0, 0.0
 	};
-	static TypeSpec sSpaswner{
-		CostSpawner, HPSpawner,
-		0, 0, 0, 0, 0, false, false, false, 0.0, 0.0, 0.0
-	};
 
 	switch (t) {
 	case StructureType::Basic:      return sBasic;
@@ -76,7 +72,6 @@ inline const TypeSpec& GetSpec(StructureType t) {
 	case StructureType::Sniper:     return sSniper;
 	case StructureType::Mortar:     return sMortar;
 	case StructureType::HQ:         return sHQ;
-	case StructureType::spawner:    return sSpaswner;
 	default:                        return sBasic;
 	}
 }
