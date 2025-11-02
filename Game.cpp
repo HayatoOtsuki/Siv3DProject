@@ -1132,16 +1132,16 @@ void Game::drawUI() {
 	drawButton(U"インクポンプ", StructureType::Pump, y += 42, CostPump);
 	drawButton(U"スナイパー", StructureType::Sniper, y += 42, CostSniper);
 	drawButton(U"迫撃砲", StructureType::Mortar, y += 42, CostMortar);
-	drawButton(U"スポナー", StructureType::spawner, y += 42, CostSpawner);
+	//drawButton(U"スポナー", StructureType::spawner, y += 42, CostSpawner);
 
 	y += 60;
 	if (phase == Phase::Planning) {
-		FontAsset(U"UI")(U"[Click] 置く / スポナー[Click]出撃 / [Enter] 自動戦闘 10s").draw(18, Vec2{ ui.x + 14, y }, ColorF{ 0.95 });
-		FontAsset(U"UI")(U"[WASD] で移動して塗る / 敵はAIでスポーンし体当たり").draw(16, Vec2{ ui.x + 14, y + 24 }, ColorF{ 0.95 });
+		FontAsset(U"UI")(U"[Click] 置く / [Enter] 自動戦闘 10s").draw(18, Vec2{ ui.x + 14, y }, ColorF{ 0.95 });
+		//FontAsset(U"UI")(U"[WASD] で移動して塗る / 敵はAIでスポーンし体当たり").draw(16, Vec2{ ui.x + 14, y + 24 }, ColorF{ 0.95 });
 	}
 	else if (phase == Phase::Simulating) {
 		FontAsset(U"UI")(U"自動戦闘中… 残り {:.1f}s"_fmt(simTime)).draw(18, Vec2{ ui.x + 14, y }, ColorF{ 0.95 });
-		FontAsset(U"UI")(U"敵はスポナーから定期出撃 → Blue構造物へ体当たり").draw(16, Vec2{ ui.x + 14, y + 24 }, ColorF{ 0.95 });
+		//FontAsset(U"UI")(U"敵はスポナーから定期出撃 → Blue構造物へ体当たり").draw(16, Vec2{ ui.x + 14, y + 24 }, ColorF{ 0.95 });
 	}
 	else {
 		FontAsset(U"UI")(U"[Enter] でも次へ進めます").draw(18, Vec2{ ui.x + 14, y }, ColorF{ 0.95 });
