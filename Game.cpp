@@ -116,6 +116,76 @@ void Game::layout() {
 }
 
 void Game::buildMapForStage(int stageNo) {
+	//for (int y = 0; y < GH; ++y) {
+	//	for (int x = 0; x < GW; ++x) {
+	//		Tile& t = brd.tiles[brd.idx(x, y)];
+	//		bool makeWall = false;
+
+	//		switch (stage)
+	//		{
+	//		case 1:
+	//			if (MapTip_Stage1[y][x] == '0') makeWall = true;
+	//			else if (MapTip_Stage1[y][x] == 'P') bHQ = { x, y }; //自軍HQ設置
+	//			else if (MapTip_Stage1[y][x] == 'E') rHQ = { x, y }; //敵軍HQ設置
+	//			else if (MapTip_Stage1[y][x] == 'r') t.paint = 0.20f;
+	//			else if (MapTip_Stage1[y][x] == 'b') t.paint = 0.80f;
+	//			else if (MapTip_Stage1[y][x] == 't') t.paint = 0.21f; //タレットを配置するための印をつけとく
+	//			else if (MapTip_Stage1[y][x] == 's') t.paint = 0.22f;
+	//			else if (MapTip_Stage1[y][x] == 'p') t.paint = 0.23f;
+	//			else  t.paint = 0.50f;
+	//			break;
+
+	//		case 2:
+	//			if (MapTip_Stage2[y][x] == '0') makeWall = true;
+	//			else if (MapTip_Stage2[y][x] == 'P') bHQ = { x, y }; //自軍HQ設置
+	//			else if (MapTip_Stage2[y][x] == 'E') rHQ = { x, y }; //敵軍HQ設置
+	//			else if (MapTip_Stage2[y][x] == 'r') t.paint = 0.20f;
+	//			else if (MapTip_Stage2[y][x] == 'b') t.paint = 0.80f;
+	//			else if (MapTip_Stage2[y][x] == 't') t.paint = 0.21f; //タレットを配置するための印をつけとく
+	//			else if (MapTip_Stage2[y][x] == 's') t.paint = 0.22f;
+	//			else if (MapTip_Stage2[y][x] == 'p') t.paint = 0.23f;
+	//			else  t.paint = 0.50f;
+	//			break;
+
+	//		case 3:
+	//			if (MapTip_Stage3[y][x] == '0') makeWall = true;
+	//			else if (MapTip_Stage3[y][x] == 'P') bHQ = { x, y }; //自軍HQ設置
+	//			else if (MapTip_Stage3[y][x] == 'E') rHQ = { x, y }; //敵軍HQ設置
+	//			else if (MapTip_Stage3[y][x] == 'r') t.paint = 0.20f;
+	//			else if (MapTip_Stage3[y][x] == 'b') t.paint = 0.80f;
+	//			else if (MapTip_Stage3[y][x] == 't') t.paint = 0.21f; //タレットを配置するための印をつけとく
+	//			else if (MapTip_Stage3[y][x] == 's') t.paint = 0.22f;
+	//			else if (MapTip_Stage3[y][x] == 'p') t.paint = 0.23f;
+	//			else  t.paint = 0.50f;
+	//			break;
+
+	//		default:
+	//			if (MapTip_Stage3[y][x] == '0') makeWall = true;
+	//			else if (MapTip_Stage3[y][x] == 'P') bHQ = { x, y }; //自軍HQ設置
+	//			else if (MapTip_Stage3[y][x] == 'E') rHQ = { x, y }; //敵軍HQ設置
+	//			else if (MapTip_Stage3[y][x] == 'r') t.paint = 0.20f;
+	//			else if (MapTip_Stage3[y][x] == 'b') t.paint = 0.80f;
+	//			else if (MapTip_Stage3[y][x] == 't') t.paint = 0.21f; //タレットを配置するための印をつけとく
+	//			else if (MapTip_Stage3[y][x] == 's') t.paint = 0.22f;
+	//			else if (MapTip_Stage3[y][x] == 'p') t.paint = 0.23f;
+	//			else  t.paint = 0.50f;
+
+	//		}
+
+	//		if (makeWall) {
+	//			t.kind = TileKind::Wall;
+	//			t.paint = 0.5f;
+	//			continue;
+	//		}
+
+	//		//if (x < GW / 2 - 2)      t.paint = 0.80f;
+	//		//else if (x > GW / 2 + 1) t.paint = 0.20f;
+	//		//else
+	//		//                   t.paint = 0.50f;
+	//		t.kind = TileKind::Floor;
+	//	}
+	//}
+	
 	// Audio を最初に準備
 	initAudio();
 
@@ -129,69 +199,18 @@ void Game::buildMapForStage(int stageNo) {
 			Tile& t = brd.tiles[brd.idx(x, y)];
 			bool makeWall = false;
 
-			switch (stage)
-			{
-			case 1:
-				if (MapTip_Stage1[y][x] == '0') makeWall = true;
-				else if (MapTip_Stage1[y][x] == 'P') bHQ = { x, y }; //自軍HQ設置
-				else if (MapTip_Stage1[y][x] == 'E') rHQ = { x, y }; //敵軍HQ設置
-				else if (MapTip_Stage1[y][x] == 'r') t.paint = 0.20f;
-				else if (MapTip_Stage1[y][x] == 'b') t.paint = 0.80f;
-				else if (MapTip_Stage1[y][x] == 't') t.paint = 0.21f; //タレットを配置するための印をつけとく
-				else if (MapTip_Stage1[y][x] == 's') t.paint = 0.22f;
-				else if (MapTip_Stage1[y][x] == 'p') t.paint = 0.23f;
-				else  t.paint = 0.50f;
-				break;
-
-			case 2:
-				if (MapTip_Stage2[y][x] == '0') makeWall = true;
-				else if (MapTip_Stage2[y][x] == 'P') bHQ = { x, y }; //自軍HQ設置
-				else if (MapTip_Stage2[y][x] == 'E') rHQ = { x, y }; //敵軍HQ設置
-				else if (MapTip_Stage2[y][x] == 'r') t.paint = 0.20f;
-				else if (MapTip_Stage2[y][x] == 'b') t.paint = 0.80f;
-				else if (MapTip_Stage2[y][x] == 't') t.paint = 0.21f; //タレットを配置するための印をつけとく
-				else if (MapTip_Stage2[y][x] == 's') t.paint = 0.22f;
-				else if (MapTip_Stage2[y][x] == 'p') t.paint = 0.23f;
-				else  t.paint = 0.50f;
-				break;
-
-			case 3:
-				if (MapTip_Stage3[y][x] == '0') makeWall = true;
-				else if (MapTip_Stage3[y][x] == 'P') bHQ = { x, y }; //自軍HQ設置
-				else if (MapTip_Stage3[y][x] == 'E') rHQ = { x, y }; //敵軍HQ設置
-				else if (MapTip_Stage3[y][x] == 'r') t.paint = 0.20f;
-				else if (MapTip_Stage3[y][x] == 'b') t.paint = 0.80f;
-				else if (MapTip_Stage3[y][x] == 't') t.paint = 0.21f; //タレットを配置するための印をつけとく
-				else if (MapTip_Stage3[y][x] == 's') t.paint = 0.22f;
-				else if (MapTip_Stage3[y][x] == 'p') t.paint = 0.23f;
-				else  t.paint = 0.50f;
-				break;
-
-			default:
-				if (MapTip_Stage3[y][x] == '0') makeWall = true;
-				else if (MapTip_Stage3[y][x] == 'P') bHQ = { x, y }; //自軍HQ設置
-				else if (MapTip_Stage3[y][x] == 'E') rHQ = { x, y }; //敵軍HQ設置
-				else if (MapTip_Stage3[y][x] == 'r') t.paint = 0.20f;
-				else if (MapTip_Stage3[y][x] == 'b') t.paint = 0.80f;
-				else if (MapTip_Stage3[y][x] == 't') t.paint = 0.21f; //タレットを配置するための印をつけとく
-				else if (MapTip_Stage3[y][x] == 's') t.paint = 0.22f;
-				else if (MapTip_Stage3[y][x] == 'p') t.paint = 0.23f;
-				else  t.paint = 0.50f;
-
-
-			}
-
+			if (MapTip_Stage1[y][x] == '0') makeWall = true;
+			if (MapTip_Stage1[y][x] == 'P') bHQ = { x, y }; //自軍HQ設置
+			if (MapTip_Stage1[y][x] == 'E') rHQ = { x, y }; //敵軍HQ設置
 
 			if (makeWall) {
 				t.kind = TileKind::Wall;
 				t.paint = 0.5f;
 				continue;
 			}
-
-			//if (x < GW / 2 - 2)      t.paint = 0.80f;
-			//else if (x > GW / 2 + 1) t.paint = 0.20f;
-			//else
-			//                   t.paint = 0.50f;
+			if (x < GW / 2 - 2)      t.paint = 0.80f;
+			else if (x > GW / 2 + 1) t.paint = 0.20f;
+			else                     t.paint = 0.50f;
 			t.kind = TileKind::Floor;
 		}
 	}
@@ -246,7 +265,6 @@ void Game::buildMapForStage(int stageNo) {
 	stageStarting = true;
 	stageBannerT = 0.0;
 
-	summarySfxPlayed = false; // 念のためリセット
 	clearShakeAndHitStop();
 }
 
