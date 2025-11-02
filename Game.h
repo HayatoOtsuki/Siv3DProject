@@ -7,6 +7,7 @@
 #include "Board.h"
 #include "GridUtils.h"
 
+
 class Game {
 public:
 	Board brd;
