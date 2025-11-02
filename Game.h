@@ -19,8 +19,8 @@ public:
 	bool stageCleared = false;
 
 	// 経済
-	int moneyBlue = 140;
-	int moneyRed = 140;
+	int moneyBlue = 200;
+	int moneyRed = 1040;
 	int turnCount = 1;
 
 	// プレイヤーの選択
@@ -132,4 +132,5 @@ private:
 	s3d::Vec2 enemySeekTargetVec(const Actor& e) const;
 	void updateEnemySpawnerProduction(double dt);
 	void updateRedAgents(double dt);
+
 };
