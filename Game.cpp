@@ -2,6 +2,65 @@
 
 using namespace s3d;
 
+// 構造物用テクスチャのローダー/アクセサ（初回呼び出し時にロード）
+namespace {
+	// CurrentDirectory から複数候補を試してロードする
+	static Texture LoadTex(const FilePath& relUnderRom) {
+		// relUnderRom は "texture/T_sBasic.png" のように Rom 直下からの相対を渡す
+		const Array<FilePath> candidates = {
+			U"Rom/" + relUnderRom,      // 作業ディレクトリ直下に Rom がある場合
+			U"rom/" + relUnderRom,      // 小文字表記
+			U"../Rom/" + relUnderRom,   // 作業ディレクトリが App/ などで、一つ上に Rom がある場合（←あなたの構成に一致）
+			U"../rom/" + relUnderRom,
+			U"../../Rom/" + relUnderRom,
+			U"../../rom/" + relUnderRom,
+		};
+
+		for (const auto& p : candidates) {
+			if (FileSystem::Exists(p)) {
+				Texture t{ p };
+				if (t) {
+					/*Print << U"[Texture] Loaded: " << FileSystem::FullPath(p)
+						<< U" (" << t.size().x << U"x" << t.size().y << U")";*/
+					return t;
+				}
+			}
+		}
+		return {};
+	}
+
+	const Texture& GetStructureTexture(StructureType t) {
+		static bool initialized = false;
+		static Texture texBasic, texSprinkler, texPump, texSniper, texMortar, texHQ, texSpawner;
+
+		if (!initialized) {
+			// Rom 直下からの相対パスを渡す
+			texBasic = LoadTex(U"texture/T_sBasic.png");
+			texSprinkler = LoadTex(U"texture/T_sSprinkler.png");
+			texPump = LoadTex(U"texture/T_sPump.png");
+			texSniper = LoadTex(U"texture/T_sSniper.png");
+			texMortar = LoadTex(U"texture/T_sMortar.png");
+			texHQ = LoadTex(U"texture/T_sHQ.png");
+			// texSpawner = LoadTex(U"texture/T_sSpaswner.png"); // 提供名に合わせる
+			initialized = true;
+
+			// 実際の作業ディレクトリを出力
+			// Print << U"[Debug] CurrentDir: " << FileSystem::CurrentDirectory();
+		}
+
+		switch (t) {
+		case StructureType::Basic:     return texBasic;
+		case StructureType::Sprinkler: return texSprinkler;
+		case StructureType::Pump:      return texPump;
+		case StructureType::Sniper:    return texSniper;
+		case StructureType::Mortar:    return texMortar;
+		case StructureType::HQ:        return texHQ;
+		case StructureType::spawner:   return texSpawner;
+		default:                       return texBasic;
+		}
+	}
+}
+
 void Game::layout() {
 	const double leftW = Scene::Width() - UIWidth - 2 * Margin;
 	const double leftH = Scene::Height() - 2 * Margin;
@@ -36,9 +95,6 @@ char MapTip_Stage1[GH][GW] = {
 	"...................................",
 };
 
-
-
-
 void Game::buildMapForStage(int stageNo) {
 	brd.init();
 
@@ -50,11 +106,10 @@ void Game::buildMapForStage(int stageNo) {
 			Tile& t = brd.tiles[brd.idx(x, y)];
 			bool makeWall = false;
 
-
 			if (MapTip_Stage1[y][x] == '0') makeWall = true;
 			if (MapTip_Stage1[y][x] == 'P') bHQ = { x, y }; //自軍HQ設置
 			if (MapTip_Stage1[y][x] == 'E') rHQ = { x, y }; //敵軍HQ設置
-		
+
 			if (makeWall) {
 				t.kind = TileKind::Wall;
 				t.paint = 0.5f;
@@ -988,41 +1043,52 @@ void Game::drawStructures() const {
 	auto drawSide = [&](const Array<Structure>& a) {
 		for (const auto& s : a) {
 			if (!s.alive) continue;
-			const RectF rc = brd.cellRect(s.cell).stretched(-4);
+			const RectF rc = brd.cellRect(s.cell).stretched(5);
 			const ColorF base = (s.owner == Team::Blue ? HSV{ 210,0.9,1.0 } : HSV{ 0,0.9,1.0 });
 
-			switch (s.type) {
-			case StructureType::Basic:
-				rc.draw(base.withAlpha(0.85));
-				rc.drawFrame(2, ColorF{ 0,0,0,0.65 });
-				break;
-			case StructureType::Sprinkler:
-				Circle{ rc.center(), rc.w * 0.32 }.draw(base);
-				Circle{ rc.center(), rc.w * 0.50 }.drawFrame(2, base);
-				break;
-			case StructureType::Pump:
-				Triangle{ rc.center(), rc.w * 0.9, 0_deg }.draw(base);
-				break;
-			case StructureType::Sniper:
-				RectF{ Arg::center = rc.center(), rc.w * 0.9, rc.h * 0.55 }.draw(base);
-				break;
-			case StructureType::Mortar:
-				Circle{ rc.center(), rc.w * 0.42 }.draw(base);
-				RectF{ Arg::center = rc.center().movedBy(0, -rc.h * 0.15), rc.w * 0.28, rc.h * 0.35 }.draw(ColorF{ 0 });
-				break;
-			case StructureType::HQ:
-				Circle{ rc.center(), rc.w * 0.60 }.drawFrame(3, base);
-				break;
-			case StructureType::spawner:
-				Circle{ rc.center(), rc.w * 0.36 }.draw(base);
-				for (int i = 0; i < 6; ++i) {
-					const double ang = i * (Math::TwoPi / 6.0);
-					Vec2 p = rc.center() + Vec2{ Cos(ang), Sin(ang) } * rc.w * 0.55;
-					Circle{ p, rc.w * 0.10 }.draw(base);
+			// テクスチャ描画（存在しない場合は従来の図形描画にフォールバック）
+			const Texture& tex = GetStructureTexture(s.type);
+			bool drawn = false;
+			if (tex) {
+				tex.resized(rc.w, rc.h).draw(rc.pos, base);
+				drawn = true;
+			}
+
+			if (!drawn) {
+				// フォールバック: 旧シェイプ描画
+				switch (s.type) {
+				case StructureType::Basic:
+					rc.draw(base.withAlpha(0.85));
+					rc.drawFrame(2, ColorF{ 0,0,0,0.65 });
+					break;
+				case StructureType::Sprinkler:
+					Circle{ rc.center(), rc.w * 0.32 }.draw(base);
+					Circle{ rc.center(), rc.w * 0.50 }.drawFrame(2, base);
+					break;
+				case StructureType::Pump:
+					Triangle{ rc.center(), rc.w * 0.9, 0_deg }.draw(base);
+					break;
+				case StructureType::Sniper:
+					RectF{ Arg::center = rc.center(), rc.w * 0.9, rc.h * 0.55 }.draw(base);
+					break;
+				case StructureType::Mortar:
+					Circle{ rc.center(), rc.w * 0.42 }.draw(base);
+					RectF{ Arg::center = rc.center().movedBy(0, -rc.h * 0.15), rc.w * 0.28, rc.h * 0.35 }.draw(ColorF{ 0 });
+					break;
+				case StructureType::HQ:
+					Circle{ rc.center(), rc.w * 0.60 }.drawFrame(3, base);
+					break;
+				case StructureType::spawner:
+					Circle{ rc.center(), rc.w * 0.36 }.draw(base);
+					for (int i = 0; i < 6; ++i) {
+						const double ang = i * (Math::TwoPi / 6.0);
+						Vec2 p = rc.center() + Vec2{ Cos(ang), Sin(ang) } * rc.w * 0.55;
+						Circle{ p, rc.w * 0.10 }.draw(base);
+					}
+					Circle{ rc.center(), rc.w * 0.18 }.draw(ColorF{ 0,0,0,0.75 });
+					rc.drawFrame(2, ColorF{ 0,0,0,0.65 });
+					break;
 				}
-				Circle{ rc.center(), rc.w * 0.18 }.draw(ColorF{ 0,0,0,0.75 });
-				rc.drawFrame(2, ColorF{ 0,0,0,0.65 });
-				break;
 			}
 
 			// HPバー
@@ -1132,16 +1198,16 @@ void Game::drawUI() {
 	drawButton(U"インクポンプ", StructureType::Pump, y += 42, CostPump);
 	drawButton(U"スナイパー", StructureType::Sniper, y += 42, CostSniper);
 	drawButton(U"迫撃砲", StructureType::Mortar, y += 42, CostMortar);
-	//drawButton(U"スポナー", StructureType::spawner, y += 42, CostSpawner);
+	// drawButton(U"スポナー", StructureType::spawner, y += 42, CostSpawner);
 
 	y += 60;
 	if (phase == Phase::Planning) {
-		FontAsset(U"UI")(U"[Click] 置く / [Enter] 自動戦闘 10s").draw(18, Vec2{ ui.x + 14, y }, ColorF{ 0.95 });
-		//FontAsset(U"UI")(U"[WASD] で移動して塗る / 敵はAIでスポーンし体当たり").draw(16, Vec2{ ui.x + 14, y + 24 }, ColorF{ 0.95 });
+		FontAsset(U"UI")(U"[Click] 置く / スポナー[Click]出撃 / [Enter] 自動戦闘 10s").draw(18, Vec2{ ui.x + 14, y }, ColorF{ 0.95 });
+		FontAsset(U"UI")(U"[WASD] で移動して塗る / 敵はAIでスポーンし体当たり").draw(16, Vec2{ ui.x + 14, y + 24 }, ColorF{ 0.95 });
 	}
 	else if (phase == Phase::Simulating) {
 		FontAsset(U"UI")(U"自動戦闘中… 残り {:.1f}s"_fmt(simTime)).draw(18, Vec2{ ui.x + 14, y }, ColorF{ 0.95 });
-		//FontAsset(U"UI")(U"敵はスポナーから定期出撃 → Blue構造物へ体当たり").draw(16, Vec2{ ui.x + 14, y + 24 }, ColorF{ 0.95 });
+		FontAsset(U"UI")(U"敵はスポナーから定期出撃 → Blue構造物へ体当たり").draw(16, Vec2{ ui.x + 14, y + 24 }, ColorF{ 0.95 });
 	}
 	else {
 		FontAsset(U"UI")(U"[Enter] でも次へ進めます").draw(18, Vec2{ ui.x + 14, y }, ColorF{ 0.95 });
