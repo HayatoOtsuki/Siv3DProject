@@ -59,3 +59,7 @@ inline constexpr double EnemyExplodeHitstop = 0.04;
 
 // 敵スポナーの出撃間隔
 inline constexpr double EnemySpawnerInterval = 16.0; //初期値4.0f
+
+// タレット回転設定
+inline constexpr double TurretTurnSpeed = 6.0; // rad/s（約344°/s）
+inline constexpr double SprinklerSpinSpeed = 2.8; // rad/s（スプリンクラーの常時回転速度）

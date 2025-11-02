@@ -3,6 +3,7 @@
 using namespace s3d;
 
 // 構造物用テクスチャのローダー/アクセサ（初回呼び出し時にロード）
+// 構造物用テクスチャのローダー/アクセサ（初回呼び出し時にロード）
 namespace {
 	// CurrentDirectory から複数候補を試してロードする
 	static Texture LoadTex(const FilePath& relUnderRom) {
@@ -20,8 +21,6 @@ namespace {
 			if (FileSystem::Exists(p)) {
 				Texture t{ p };
 				if (t) {
-					/*Print << U"[Texture] Loaded: " << FileSystem::FullPath(p)
-						<< U" (" << t.size().x << U"x" << t.size().y << U")";*/
 					return t;
 				}
 			}
@@ -43,9 +42,6 @@ namespace {
 			texHQ = LoadTex(U"texture/T_sHQ.png");
 			// texSpawner = LoadTex(U"texture/T_sSpaswner.png"); // 提供名に合わせる
 			initialized = true;
-
-			// 実際の作業ディレクトリを出力
-			// Print << U"[Debug] CurrentDir: " << FileSystem::CurrentDirectory();
 		}
 
 		switch (t) {
@@ -58,6 +54,20 @@ namespace {
 		case StructureType::spawner:   return texSpawner;
 		default:                       return texBasic;
 		}
+	}
+
+	// 角度を [-pi, pi] に正規化
+	static double WrapAngle(double a) {
+		while (a <= -Math::Pi) a += Math::TwoPi;
+		while (a >   Math::Pi) a -= Math::TwoPi;
+		return a;
+	}
+
+	// 目標へ最大回転量で寄せる
+	static double StepAngleTowards(double current, double target, double maxStep) {
+		const double d = WrapAngle(target - current);
+		const double step = Clamp(d, -maxStep, maxStep);
+		return WrapAngle(current + step);
 	}
 }
 
@@ -469,6 +479,26 @@ void Game::captureStructureAt(const Point& c, Team from, Team to) {
 	}
 }
 
+// タレットの狙い更新・回転補間（毎フレーム）
+void Game::updateTurretAim(double dt) {
+	auto stepA = [&](Array<Structure>& a, Team /*side*/) {
+		for (auto& s : a) {
+			if (!s.alive) continue;
+
+			// スプリンクラーは常時右回転（時計回り）
+			if (s.type == StructureType::Sprinkler) {
+				s.rot = WrapAngle(s.rot + SprinklerSpinSpeed * dt);
+				continue;
+			}
+
+			// 他は「現在の目標角度」へスムーズに寄せる（目標角度は発射時にセット）
+			const double maxStep = TurretTurnSpeed * dt;
+			s.rot = StepAngleTowards(s.rot, s.rotTarget, maxStep);
+		}
+		};
+	stepA(blues, Team::Blue);
+	stepA(reds, Team::Red);
+}
 
 // ターゲット選択
 Optional<Point> Game::findTargetCell(Team atk, const Point& from, int range, bool turretOnly) const {
@@ -559,6 +589,7 @@ void Game::fireOnce(Structure& s, Team atk) {
 
 	const Vec2 muzzle = brd.cellCenter(s.cell);
 
+	// スプリンクラーは散布のみ＆回転は常時スピンに委ねる
 	if (s.type == StructureType::Sprinkler) {
 		for (int i = 0; i < 3; ++i) {
 			Point tc = s.cell + Point{ Random(-(int)spec.range, (int)spec.range), Random(-(int)spec.range, (int)spec.range) };
@@ -574,12 +605,19 @@ void Game::fireOnce(Structure& s, Team atk) {
 	if (!opt) return;
 	Point target = *opt;
 
-	// ブレ
+	// ブレを反映
 	if (spec.spread > 0.05) {
 		target.x += Random(-(int)spec.spread, (int)spec.spread);
 		target.y += Random(-(int)spec.spread, (int)spec.spread);
 		target.x = limit(target.x, 0, GW - 1);
 		target.y = limit(target.y, 0, GH - 1);
+	}
+
+	// 実際に撃つ方向（ブレ適用後）を目標角度に設定
+	{
+		const Vec2 hitPos = brd.cellCenter(target);
+		const double ang = Math::Atan2((hitPos - muzzle).y, (hitPos - muzzle).x);
+		s.rotTarget = ang;
 	}
 
 	if (s.type == StructureType::Mortar) {
@@ -933,6 +971,9 @@ void Game::updateSimulation(double dtReal) {
 		clearShakeAndHitStop();
 	}
 
+	// まずは狙い方向の推定と回転補間
+	updateTurretAim(dt);
+
 	// 発射スケジュール
 	auto stepFire = [&](Array<Structure>& a, Team atk) {
 		for (auto& s : a) {
@@ -952,7 +993,7 @@ void Game::updateSimulation(double dtReal) {
 	updateProjectiles(dt);
 
 	// 敵スポナー出撃
-	updateEnemySpawnerProduction(dt);
+	// updateEnemySpawnerProduction(dt);
 
 	// 敵ユニット
 	updateRedAgents(dt);
@@ -1117,39 +1158,45 @@ void Game::drawStructures() const {
 		for (const auto& s : a) {
 			if (!s.alive) continue;
 			const RectF rc = brd.cellRect(s.cell).stretched(5);
+			const Vec2 center = rc.center();
 			const ColorF base = (s.owner == Team::Blue ? HSV{ 210,0.9,1.0 } : HSV{ 0,0.9,1.0 });
 
 			// テクスチャ描画（存在しない場合は従来の図形描画にフォールバック）
 			const Texture& tex = GetStructureTexture(s.type);
 			bool drawn = false;
 			if (tex) {
-				tex.resized(rc.w, rc.h).draw(rc.pos, base);
+				// 右向き基準のテクスチャを s.rot で回転して中心描画
+				tex.resized(rc.w, rc.h).rotated(s.rot).drawAt(center, base);
 				drawn = true;
 			}
 
 			if (!drawn) {
-				// フォールバック: 旧シェイプ描画
+				// フォールバック: 旧シェイプ描画（回転なし）
 				switch (s.type) {
 				case StructureType::Basic:
 					rc.draw(base.withAlpha(0.85));
 					rc.drawFrame(2, ColorF{ 0,0,0,0.65 });
 					break;
 				case StructureType::Sprinkler:
-					Circle{ rc.center(), rc.w * 0.32 }.draw(base);
-					Circle{ rc.center(), rc.w * 0.50 }.drawFrame(2, base);
+					Circle{ center, rc.w * 0.32 }.draw(base);
+					Circle{ center, rc.w * 0.50 }.drawFrame(2, base);
 					break;
 				case StructureType::Pump:
-					Triangle{ rc.center(), rc.w * 0.9, 0_deg }.draw(base);
+					Triangle{ center, rc.w * 0.9, 0_deg }.draw(base);
 					break;
 				case StructureType::Sniper:
-					RectF{ Arg::center = rc.center(), rc.w * 0.9, rc.h * 0.55 }.draw(base);
+					RectF{ Arg::center = center, rc.w * 0.9, rc.h * 0.55 }.draw(base);
 					break;
 				case StructureType::Mortar:
-					Circle{ rc.center(), rc.w * 0.42 }.draw(base);
-					RectF{ Arg::center = rc.center().movedBy(0, -rc.h * 0.15), rc.w * 0.28, rc.h * 0.35 }.draw(ColorF{ 0 });
+					Circle{ center, rc.w * 0.42 }.draw(base);
+					RectF{ Arg::center = center.movedBy(0, -rc.h * 0.15), rc.w * 0.28, rc.h * 0.35 }.draw(ColorF{ 0 });
 					break;
 				case StructureType::HQ:
-					Circle{ rc.center(), rc.w * 0.60 }.drawFrame(3, base);
+					Circle{ center, rc.w * 0.60 }.drawFrame(3, base);
+					break;
+				case StructureType::spawner:
+					// スポナーが残っている場合のフォールバック
+					Circle{ center, rc.w * 0.36 }.draw(base);
 					break;
 				}
 			}
@@ -1157,8 +1204,7 @@ void Game::drawStructures() const {
 			// HPバー
 			const double maxHP = GetSpec(s.type).maxHP;
 			if (maxHP > 0.0 && s.type != StructureType::HQ) {
-				const double ratio = (s.hp / maxHP);
-				const double rr = (ratio < 0.0 ? 0.0 : (ratio > 1.0 ? 1.0 : ratio));
+				const double rr = Clamp(s.hp / maxHP, 0.0, 1.0);
 				const RectF hb{ rc.x, rc.y - 6, rc.w, 4 };
 				hb.draw(ColorF{ 0,0,0,0.5 });
 				RectF{ hb.pos, hb.w * rr, hb.h }.draw((s.owner == Team::Blue) ? ColorF{ 0.2,0.9,0.3 } : ColorF{ 0.9,0.2,0.2 });
