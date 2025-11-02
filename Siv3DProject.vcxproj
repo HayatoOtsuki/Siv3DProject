@@ -120,6 +120,7 @@
   <ItemGroup>
     <ClCompile Include="Game.cpp" />
     <ClCompile Include="Main.cpp" />
+    <ClCompile Include="map.cpp" />
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
@@ -334,6 +335,7 @@
     <ClInclude Include="Entities.h" />
     <ClInclude Include="Game.h" />
     <ClInclude Include="GridUtils.h" />
+    <ClInclude Include="map.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="Types.h" />
     <ClInclude Include="Utils.h" />
