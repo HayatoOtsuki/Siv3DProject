@@ -307,6 +307,10 @@ void Game::damageAt(const Point& c, double dmg, Team attacker) {
 				SpawnParticles(brd.cellCenter(c), HSV{ 0,0.7,1.0 }, 28, 150, 320, 0.30, 0.6, 3, 20);
 				AddShake(8.0, 0.15);
 				hitStopTimer = Max(hitStopTimer, 0.04);
+
+				//ダメージ
+				const bool big = (s.type == StructureType::HQ);
+				MyNamespace::SFX().play(MyNamespace::AudioID::SE_Hit, 1.0, Random(0.98, 1.02));
 			}
 		}
 	}
@@ -323,6 +327,11 @@ void Game::damageAt(const Point& c, double dmg, Team attacker) {
 				SpawnParticles(brd.cellCenter(c), HSV{ 210,0.7,1.0 }, 28, 150, 320, 0.30, 0.6, 3, 20);
 				AddShake(8.0, 0.15);
 				hitStopTimer = Max(hitStopTimer, 0.04);
+
+				//ダメージ
+				const bool big = (s.type == StructureType::HQ);
+				MyNamespace::SFX().play(MyNamespace::AudioID::SE_Hit, 1.0, Random(0.98, 1.02));
+
 			}
 		}
 	}
@@ -431,6 +440,22 @@ void Game::fireOnce(Structure& s, Team atk) {
 
 	const Vec2 muzzle = brd.cellCenter(s.cell);
 
+	// 種別に応じて発射音
+	switch (s.type) {
+	case StructureType::Sprinkler:
+		MyNamespace::SFX().playRandomPitch(MyNamespace::AudioID::SE_Sprinkler, 1.0, 0.98, 1.02);
+		break;
+	case StructureType::Mortar:
+		MyNamespace::SFX().play(MyNamespace::AudioID::SE_MortarLaunch);
+		break;
+	case StructureType::Sniper:
+		MyNamespace::SFX().play(MyNamespace::AudioID::SE_ShootSniper);
+		break;
+	default: // Basic 
+		MyNamespace::SFX().playRandomPitch(MyNamespace::AudioID::SE_ShootBasic, 1.0, 0.98, 1.02);
+		break;
+	}
+
 	if (s.type == StructureType::Sprinkler) {
 		for (int i = 0; i < 3; ++i) {
 			Point tc = s.cell + Point{ Random(-(int)spec.range, (int)spec.range), Random(-(int)spec.range, (int)spec.range) };
@@ -446,7 +471,6 @@ void Game::fireOnce(Structure& s, Team atk) {
 	if (!opt) return;
 	Point target = *opt;
 
-	// ブレ
 	if (spec.spread > 0.05) {
 		target.x += Random(-(int)spec.spread, (int)spec.spread);
 		target.y += Random(-(int)spec.spread, (int)spec.spread);
@@ -555,15 +579,18 @@ void Game::impactAt(const Projectile& pr, const Point& ic) {
 		Circle{ brd.cellCenter(ic), 16.0 + pr.aoeRadius * brd.tileSize * 0.25 }.drawFrame(3, TeamColor(pr.owner).withAlpha(0.6));
 		AddShake(7.0, 0.12);
 		hitStopTimer = Max(hitStopTimer, 0.02);
+
 	}
 	else {
 		applyPaintAt(ic, (pr.owner == Team::Blue ? +pr.paint : -pr.paint));
 		damageAt(ic, pr.damage, pr.owner);
 		SpawnParticles(brd.cellCenter(ic), (pr.owner == Team::Blue ? HSV{ 210,0.8,1.0 } : HSV{ 0,0.8,1.0 }), 10, 120, 220, 0.20, 0.45, 3, 12);
 		AddShake(3.0, 0.06);
+
+		// 被弾音
+		MyNamespace::SFX().playRandom(MyNamespace::AudioID::SE_Hit, 0.9, Random(0.97, 1.03));
 	}
 }
-
 // ===================== プレイヤー操作・敵AI（体当たり） =====================
 
 bool Game::isWallAt(const Vec2& p) const {
@@ -802,6 +829,10 @@ void Game::updateSimulation(double dtReal) {
 		simTime = 0.0;
 		phase = Phase::Summary;
 		stageCleared = isBlueWin() && !isBlueLose();
+		// ステージクリア音
+		if (stageCleared) {
+			MyNamespace::SFX().play(MyNamespace::AudioID::SE_StageClear);
+		}
 		clearShakeAndHitStop();
 	}
 
@@ -954,6 +985,7 @@ bool Game::placeBlue(StructureType type, const Point& c) {
 	blues << s;
 	brd.blueIndex[brd.idx(c.x, c.y)] = (int)blues.size() - 1;
 	moneyBlue -= GetSpec(type).cost;
+	MyNamespace::SFX().playRandomPitch(MyNamespace::AudioID::SE_Place, 1.0, 0.98, 1.02);
 	return true;
 }
 

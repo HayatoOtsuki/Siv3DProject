@@ -1,5 +1,6 @@
 ﻿# include <Siv3D.hpp> // Siv3D v0.6.16
 #include "Game.h"
+#include "audio.h"
 
 
 void Main() {
@@ -7,6 +8,11 @@ void Main() {
 	Scene::SetBackground(ColorF{ 0.06, 0.06, 0.07 });
 	FontAsset::Register(U"UI", FontMethod::MSDF, 20, Typeface::Bold);
 	const ScopedRenderStates2D _sampler{ SamplerState::ClampLinear };
+
+
+	// 効果音をロード
+	MyNamespace::SFX().loadDefaults();      
+	MyNamespace::SFX().setMasterVolume(0.9);
 
 	Game G;
 	G.layout();

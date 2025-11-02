@@ -6,6 +6,8 @@
 #include "Entities.h"
 #include "Board.h"
 #include "GridUtils.h"
+#include "audio.h"
+
 
 class Game {
 public:
