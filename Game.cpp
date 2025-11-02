@@ -1151,16 +1151,6 @@ void Game::drawStructures() const {
 				case StructureType::HQ:
 					Circle{ rc.center(), rc.w * 0.60 }.drawFrame(3, base);
 					break;
-				case StructureType::spawner:
-					Circle{ rc.center(), rc.w * 0.36 }.draw(base);
-					for (int i = 0; i < 6; ++i) {
-						const double ang = i * (Math::TwoPi / 6.0);
-						Vec2 p = rc.center() + Vec2{ Cos(ang), Sin(ang) } * rc.w * 0.55;
-						Circle{ p, rc.w * 0.10 }.draw(base);
-					}
-					Circle{ rc.center(), rc.w * 0.18 }.draw(ColorF{ 0,0,0,0.75 });
-					rc.drawFrame(2, ColorF{ 0,0,0,0.65 });
-					break;
 				}
 			}
 
