@@ -8,36 +8,6 @@ void Main() {
 	FontAsset::Register(U"UI", FontMethod::MSDF, 20, Typeface::Bold);
 	const ScopedRenderStates2D _sampler{ SamplerState::ClampLinear };
 
-	// 出力先フォルダ
-	const FilePath outDir = U"rom/";
-	FileSystem::CreateDirectories(outDir);
-
-	const ColorF blueBase = HSV{ 210, 0.9, 1.0 };
-	const ColorF redBase = HSV{ 0,   0.9, 1.0 };
-
-	Array<StructureType> types = {
-		StructureType::Basic, StructureType::Sprinkler, StructureType::Pump,
-		StructureType::Sniper, StructureType::Mortar, StructureType::HQ,
-		StructureType::spawner
-	};
-
-	// 出力サイズ
-	const Size iconSize{ 256, 256 };
-
-	// Blueバージョンを書き出し
-	for (auto t : types) {
-		const Image img = MakeStructureIcon(t, iconSize, blueBase);
-		const FilePath path = outDir + (U"blue_" + FileNameFor(t));
-		img.save(path);
-	}
-
-	// Redバージョンも欲しければ
-	for (auto t : types) {
-		const Image img = MakeStructureIcon(t, iconSize, redBase);
-		const FilePath path = outDir + (U"red_" + FileNameFor(t));
-		img.save(path);
-	}
-
 	Game G;
 	G.layout();
 	G.buildMapForStage(1);
@@ -83,14 +53,5 @@ void Main() {
 		G.drawUI();
 		G.drawHoverHelp();
 		G.drawStageBanner();
-
-		// 参考表示
-		auto [bp, rp] = Ownership(G.brd);
-		const bool blueLose = G.isBlueLose();
-		const bool blueWin = G.isBlueWin();
-		if (blueLose || blueWin) {
-			const String msg = blueLose ? U"敗北条件達成" : U"勝利条件達成";
-			FontAsset(U"UI")(msg).drawAt(28, Vec2{ Scene::Width() * 0.5, 26 }, ColorF{ 1, 1, 0.8 });
-		}
 	}
 }
