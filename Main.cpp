@@ -1,4 +1,5 @@
-﻿# include <Siv3D.hpp> // Siv3D v0.6.16
+﻿
+# include <Siv3D.hpp> // Siv3D v0.6.16
 #include "Game.h"
 #include "audio.h"
 
