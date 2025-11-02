@@ -53,7 +53,7 @@ void Main() {
 			if (bgmTitle && !bgmTitle.isPlaying()) {
 				bgmGame.stop();
 				bgmTitle.setLoop(true);
-				bgmTitle.setVolume(1.0);   // 任意（既定1.0）
+				bgmTitle.setVolume(0.3);   // 任意（既定1.0）
 				bgmTitle.play();           // 引数なしで再生
 			}
 
@@ -86,7 +86,7 @@ void Main() {
 				}
 				if (bgmGame && !bgmGame.isPlaying()) {
 					bgmGame.setLoop(true);
-					bgmGame.setVolume(1.0);    // 任意（既定1.0）
+					bgmGame.setVolume(0.3);    // 任意（既定1.0）
 					bgmGame.play();            // 引数なしで再生
 					// フェードインしたい場合は以下のように:
 					// bgmGame.setVolume(0.0);
