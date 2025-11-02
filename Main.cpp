@@ -34,6 +34,16 @@ void Main() {
 			const RectF panel{ 0, 0, (double)Scene::Width(), (double)Scene::Height() };
 			panel.draw(ColorF{ 0,0,0,0.15 });
 
+			// 画像がある場合は画像を描画、無い場合は文字をフォールバック描画
+			const s3d::Vec2 titlePos = Scene::Center().movedBy(0, -140);
+			if (titleImage) {
+				// 画像の中心を titlePos に合わせて描画
+				titleImage.drawAt(titlePos);
+			}
+			else {
+				// フォールバック（従来のテキスト描画）
+				FontAsset(U"UI")(U"浸食！インクウォーズ").drawAt(48, titlePos, ColorF{ 1,1,1 });
+			}
 
 			// ボタン
 			const Vec2 c = Scene::Center();
